@@ -535,7 +535,7 @@ if __name__ == "__main__":
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
         for idx, trunc in enumerate(truncations):
-            if trunc:
+            if trunc and infos.get("final_observation", None) is not None:
                 real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
