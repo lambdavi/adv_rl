@@ -393,6 +393,14 @@ if __name__ == "__main__":
     # Track trajectory for failure detection
     trajectory_buffer = [[] for _ in range(args.num_envs)]
     
+    # Fallback episodic trackers (in case final_info is missing/rare)
+    ep_returns = np.zeros(args.num_envs, dtype=np.float64)
+    ep_lengths = np.zeros(args.num_envs, dtype=np.int64)
+    
+    # Step reward accumulators for periodic feedback
+    step_reward_accumulator = 0.0
+    step_counter = 0
+    
     for global_step in range(args.total_timesteps):
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
@@ -403,6 +411,20 @@ if __name__ == "__main__":
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        
+        # Fallback: accumulate per-episode stats regardless of final_info
+        ep_returns += rewards
+        ep_lengths += 1
+        
+        # Periodic step-level logging (every 100 steps)
+        step_reward_accumulator += float(np.mean(rewards))
+        step_counter += 1
+        if global_step % 100 == 0:
+            avg_step_reward = step_reward_accumulator / max(step_counter, 1)
+            writer.add_scalar("charts/immediate_reward", float(np.mean(rewards)), global_step)
+            writer.add_scalar("charts/avg_reward_per_step", avg_step_reward, global_step)
+            step_reward_accumulator = 0.0
+            step_counter = 0
 
         # Failure detection and buffer management
         if args.use_failure_buffer and failure_buffer is not None:
@@ -424,6 +446,7 @@ if __name__ == "__main__":
                     trajectory_buffer[env_idx] = []
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
+        # Preferred path: use final_info emitted by RecordEpisodeStatistics
         if "final_info" in infos:
             for info in infos["final_info"]:
                 if info is not None:
@@ -473,8 +496,41 @@ if __name__ == "__main__":
                             print(f"  Success: {success}")
                     
                     break
-        else:
-            print("No final info")
+        
+        # Fallback path: if any env is done this step, log episode stats built from accumulators
+        for env_idx in range(args.num_envs):
+            if terminations[env_idx] or truncations[env_idx]:
+                episodic_return = float(ep_returns[env_idx])
+                episodic_length = int(ep_lengths[env_idx])
+                
+                reward_history.append(episodic_return)
+                if len(reward_history) > rolling_window:
+                    reward_history.pop(0)
+                
+                if len(reward_history) > 0:
+                    rolling_mean = np.mean(reward_history)
+                    rolling_std = np.std(reward_history)
+                    rolling_min = np.min(reward_history)
+                    rolling_max = np.max(reward_history)
+                
+                writer.add_scalar("charts/episodic_return", episodic_return, global_step)
+                writer.add_scalar("charts/episodic_length", episodic_length, global_step)
+                if len(reward_history) > 0:
+                    writer.add_scalar("charts/rolling_mean_return", rolling_mean, global_step)
+                    writer.add_scalar("charts/rolling_std_return", rolling_std, global_step)
+                    writer.add_scalar("charts/rolling_min_return", rolling_min, global_step)
+                    writer.add_scalar("charts/rolling_max_return", rolling_max, global_step)
+                
+                if args.env_id == "LunarLander-v3":
+                    success = episodic_return >= 200
+                    writer.add_scalar("charts/success_rate", float(success), global_step)
+                elif args.env_id == "Hopper-v4":
+                    success = episodic_return >= 1000
+                    writer.add_scalar("charts/success_rate", float(success), global_step)
+                
+                # Reset accumulators for this env
+                ep_returns[env_idx] = 0.0
+                ep_lengths[env_idx] = 0
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
