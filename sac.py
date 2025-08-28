@@ -65,6 +65,14 @@ class Args:
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     
+    # Evaluation arguments
+    eval_on_finish: bool = False
+    """if toggled, run a final evaluation after training"""
+    eval_episodes: int = 10
+    """number of evaluation episodes to run at the end"""
+    eval_deterministic: bool = True
+    """use the actor mean action during evaluation (deterministic)"""
+    
     # Failure buffer specific arguments
     use_failure_buffer: bool = False
     """whether to use failure buffer for danger zone clustering"""
@@ -629,4 +637,43 @@ if __name__ == "__main__":
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
 
     envs.close()
+    
+    # Optional final evaluation
+    if args.eval_on_finish:
+        eval_env = gym.make(args.env_id)
+        returns = []
+        lengths = []
+        for ep in range(args.eval_episodes):
+            obs, _ = eval_env.reset(seed=args.seed + 10 + ep)
+            done = False
+            truncated = False
+            ep_return = 0.0
+            ep_len = 0
+            while not (done or truncated):
+                obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+                if args.eval_deterministic:
+                    with torch.no_grad():
+                        mean, _ = actor(obs_t)
+                        action = torch.tanh(mean) * actor.action_scale + actor.action_bias
+                else:
+                    with torch.no_grad():
+                        action, _, _ = actor.get_action(obs_t)
+                action_np = action.squeeze(0).detach().cpu().numpy()
+                obs, reward, done, truncated, _ = eval_env.step(action_np)
+                ep_return += float(reward)
+                ep_len += 1
+            returns.append(ep_return)
+            lengths.append(ep_len)
+        eval_env.close()
+        # Log aggregated metrics
+        writer.add_scalar("eval/return_mean", float(np.mean(returns)), args.total_timesteps)
+        writer.add_scalar("eval/return_std", float(np.std(returns)), args.total_timesteps)
+        writer.add_scalar("eval/return_min", float(np.min(returns)), args.total_timesteps)
+        writer.add_scalar("eval/return_max", float(np.max(returns)), args.total_timesteps)
+        writer.add_scalar("eval/length_mean", float(np.mean(lengths)), args.total_timesteps)
+        writer.add_scalar("eval/length_std", float(np.std(lengths)), args.total_timesteps)
+        print("Final evaluation:")
+        print(f"  Episodes: {args.eval_episodes}")
+        print(f"  Return mean/std/min/max: {np.mean(returns):.2f} / {np.std(returns):.2f} / {np.min(returns):.2f} / {np.max(returns):.2f}")
+        print(f"  Length mean/std: {np.mean(lengths):.1f} / {np.std(lengths):.1f}")
     writer.close()
