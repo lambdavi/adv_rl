@@ -1,0 +1,260 @@
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/registration.py:512: DeprecationWarning: [33mWARN: The environment Hopper-v4 is out of date. You should consider upgrading to version `v5`.[0m
+  logger.deprecation(
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/registration.py:512: DeprecationWarning: [33mWARN: The environment Hopper-v4 is out of date. You should consider upgrading to version `v5`.[0m
+  logger.deprecation(
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/utils/passive_env_checker.py:134: UserWarning: [33mWARN: The obs returned by the `reset()` method was expecting numpy array dtype to be <class 'numpy.float32'>, actual type: float64[0m
+  logger.warn(
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/utils/passive_env_checker.py:158: UserWarning: [33mWARN: The obs returned by the `reset()` method is not within the observation space.[0m
+  logger.warn(f"{pre} is not within the observation space.")
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/utils/passive_env_checker.py:134: UserWarning: [33mWARN: The obs returned by the `step()` method was expecting numpy array dtype to be <class 'numpy.float32'>, actual type: float64[0m
+  logger.warn(
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/utils/passive_env_checker.py:158: UserWarning: [33mWARN: The obs returned by the `step()` method is not within the observation space.[0m
+  logger.warn(f"{pre} is not within the observation space.")
+SPS: 270
+SPS: 261
+SPS: 253
+SPS: 247
+SPS: 242
+SPS: 237
+SPS: 233
+SPS: 226
+SPS: 222
+SPS: 218
+SPS: 215
+SPS: 211
+SPS: 208
+SPS: 203
+SPS: 201
+SPS: 198
+SPS: 195
+SPS: 191
+SPS: 188
+SPS: 186
+SPS: 184
+SPS: 182
+SPS: 181
+SPS: 179
+SPS: 178
+SPS: 176
+SPS: 175
+SPS: 174
+SPS: 172
+SPS: 171
+SPS: 169
+SPS: 168
+SPS: 167
+SPS: 166
+SPS: 165
+SPS: 164
+SPS: 164
+SPS: 163
+SPS: 162
+SPS: 161
+SPS: 160
+SPS: 159
+SPS: 159
+SPS: 158
+SPS: 157
+SPS: 157
+SPS: 156
+SPS: 155
+SPS: 155
+SPS: 154
+SPS: 153
+SPS: 152
+SPS: 152
+SPS: 151
+SPS: 151
+SPS: 150
+SPS: 150
+SPS: 148
+SPS: 148
+SPS: 147
+SPS: 147
+SPS: 146
+SPS: 146
+SPS: 145
+SPS: 144
+SPS: 144
+SPS: 143
+SPS: 143
+SPS: 143
+SPS: 142
+SPS: 142
+SPS: 141
+SPS: 141
+SPS: 141
+SPS: 140
+SPS: 140
+SPS: 139
+SPS: 139
+SPS: 139
+SPS: 139
+SPS: 138
+SPS: 138
+SPS: 138
+SPS: 137
+SPS: 137
+SPS: 137
+SPS: 136
+SPS: 136
+SPS: 136
+SPS: 135
+SPS: 135
+SPS: 135
+SPS: 135
+SPS: 134
+SPS: 134
+SPS: 134
+SPS: 133
+SPS: 133
+SPS: 133
+SPS: 133
+SPS: 133
+SPS: 133
+SPS: 133
+SPS: 132
+SPS: 132
+SPS: 132
+SPS: 132
+SPS: 132
+SPS: 131
+SPS: 131
+SPS: 131
+SPS: 131
+SPS: 131
+SPS: 131
+SPS: 131
+SPS: 130
+SPS: 130
+SPS: 130
+SPS: 130
+SPS: 130
+SPS: 130
+SPS: 130
+SPS: 130
+SPS: 129
+SPS: 129
+SPS: 129
+SPS: 129
+SPS: 129
+SPS: 129
+SPS: 129
+SPS: 128
+SPS: 128
+SPS: 128
+SPS: 128
+SPS: 128
+SPS: 128
+SPS: 128
+SPS: 128
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 127
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 126
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 125
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 124
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 123
+SPS: 122
+SPS: 122
+Traceback (most recent call last):
+  File "/Users/davidebuoso/Desktop/dev/adv_fail/sac_adv2.py", line 584, in <module>
+    q_optimizer.step()
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/optimizer.py", line 485, in wrapper
+    out = func(*args, **kwargs)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/optimizer.py", line 79, in _use_grad
+    ret = func(self, *args, **kwargs)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/adam.py", line 246, in step
+    adam(
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/optimizer.py", line 147, in maybe_fallback
+    return func(*args, **kwargs)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/adam.py", line 933, in adam
+    func(
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/adam.py", line 456, in _single_tensor_adam
+    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/Users/davidebuoso/Desktop/dev/adv_fail/sac_adv2.py", line 584, in <module>
+    q_optimizer.step()
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/optimizer.py", line 485, in wrapper
+    out = func(*args, **kwargs)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/optimizer.py", line 79, in _use_grad
+    ret = func(self, *args, **kwargs)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/adam.py", line 246, in step
+    adam(
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/optimizer.py", line 147, in maybe_fallback
+    return func(*args, **kwargs)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/adam.py", line 933, in adam
+    func(
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/torch/optim/adam.py", line 456, in _single_tensor_adam
+    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+KeyboardInterrupt
+Exception ignored in atexit callback: <function _start_and_connect_service.<locals>.teardown_atexit at 0x1085ef1c0>
+Traceback (most recent call last):
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/wandb/sdk/lib/service/service_connection.py", line 54, in teardown_atexit
+    conn.teardown(hooks.exit_code)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/wandb/sdk/lib/service/service_connection.py", line 182, in teardown
+    self._router.join()
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/wandb/sdk/interface/router.py", line 75, in join
+    self._thread.join()
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/threading.py", line 1096, in join
+    self._wait_for_tstate_lock()
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/threading.py", line 1116, in _wait_for_tstate_lock
+    if lock.acquire(block, timeout):
+KeyboardInterrupt:

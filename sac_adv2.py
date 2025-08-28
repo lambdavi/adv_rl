@@ -595,14 +595,14 @@ if __name__ == "__main__":
                     actor_loss = (alpha * log_pi - min_qf_pi).mean()
 
                     # Failure buffer actor penalty
-                    if len(failure_buffer.clusters) > 0:
-                        with torch.no_grad():
-                            danger_penalty = failure_buffer.compute_penalty(obs)
-                        danger_penalty = torch.FloatTensor(danger_penalty).to(device)
+                    if args.use_failure_buffer and failure_buffer is not None:
+                        if len(failure_buffer.clusters) > 0:
+                            with torch.no_grad():
+                                danger_penalty = failure_buffer.compute_penalty(obs)
+                            danger_penalty = torch.FloatTensor(danger_penalty).to(device)
 
-                        # add penalty term
-                        actor_loss += args.failure_penalty_weight * danger_penalty.mean()
-
+                            # add penalty term
+                            actor_loss += args.failure_penalty_weight * danger_penalty.mean()
 
                     actor_optimizer.zero_grad()
                     actor_loss.backward()

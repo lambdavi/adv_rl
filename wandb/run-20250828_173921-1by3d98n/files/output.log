@@ -1,0 +1,73 @@
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/registration.py:512: DeprecationWarning: [33mWARN: The environment Hopper-v4 is out of date. You should consider upgrading to version `v5`.[0m
+  logger.deprecation(
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/registration.py:512: DeprecationWarning: [33mWARN: The environment Hopper-v4 is out of date. You should consider upgrading to version `v5`.[0m
+  logger.deprecation(
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/utils/passive_env_checker.py:134: UserWarning: [33mWARN: The obs returned by the `reset()` method was expecting numpy array dtype to be <class 'numpy.float32'>, actual type: float64[0m
+  logger.warn(
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/utils/passive_env_checker.py:158: UserWarning: [33mWARN: The obs returned by the `reset()` method is not within the observation space.[0m
+  logger.warn(f"{pre} is not within the observation space.")
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/utils/passive_env_checker.py:134: UserWarning: [33mWARN: The obs returned by the `step()` method was expecting numpy array dtype to be <class 'numpy.float32'>, actual type: float64[0m
+  logger.warn(
+/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/utils/passive_env_checker.py:158: UserWarning: [33mWARN: The obs returned by the `step()` method is not within the observation space.[0m
+  logger.warn(f"{pre} is not within the observation space.")
+Traceback (most recent call last):
+  File "/Users/davidebuoso/Desktop/dev/adv_fail/sac_clean.py", line 241, in <module>
+    next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/vector/sync_vector_env.py", line 265, in step
+    ) = self.envs[i].step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/wrappers/common.py", line 513, in step
+    obs, reward, terminated, truncated, info = super().step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/core.py", line 327, in step
+    return self.env.step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/wrappers/common.py", line 125, in step
+    observation, reward, terminated, truncated, info = self.env.step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/wrappers/common.py", line 393, in step
+    return super().step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/core.py", line 327, in step
+    return self.env.step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/wrappers/common.py", line 285, in step
+    return self.env.step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/mujoco/hopper_v4.py", line 134, in step
+    self.do_simulation(action, self.frame_skip)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/mujoco/mujoco_env.py", line 199, in do_simulation
+    self._step_mujoco_simulation(ctrl, n_frames)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/mujoco/mujoco_env.py", line 147, in _step_mujoco_simulation
+    mujoco.mj_step(self.model, self.data, nstep=n_frames)
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/Users/davidebuoso/Desktop/dev/adv_fail/sac_clean.py", line 241, in <module>
+    next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/vector/sync_vector_env.py", line 265, in step
+    ) = self.envs[i].step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/wrappers/common.py", line 513, in step
+    obs, reward, terminated, truncated, info = super().step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/core.py", line 327, in step
+    return self.env.step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/wrappers/common.py", line 125, in step
+    observation, reward, terminated, truncated, info = self.env.step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/wrappers/common.py", line 393, in step
+    return super().step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/core.py", line 327, in step
+    return self.env.step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/wrappers/common.py", line 285, in step
+    return self.env.step(action)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/mujoco/hopper_v4.py", line 134, in step
+    self.do_simulation(action, self.frame_skip)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/mujoco/mujoco_env.py", line 199, in do_simulation
+    self._step_mujoco_simulation(ctrl, n_frames)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/gymnasium/envs/mujoco/mujoco_env.py", line 147, in _step_mujoco_simulation
+    mujoco.mj_step(self.model, self.data, nstep=n_frames)
+KeyboardInterrupt
+Exception ignored in atexit callback: <function _start_and_connect_service.<locals>.teardown_atexit at 0x1202c1b40>
+Traceback (most recent call last):
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/wandb/sdk/lib/service/service_connection.py", line 54, in teardown_atexit
+    conn.teardown(hooks.exit_code)
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/wandb/sdk/lib/service/service_connection.py", line 182, in teardown
+    self._router.join()
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/site-packages/wandb/sdk/interface/router.py", line 75, in join
+    self._thread.join()
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/threading.py", line 1096, in join
+    self._wait_for_tstate_lock()
+  File "/Users/davidebuoso/miniforge3/envs/tdp/lib/python3.10/threading.py", line 1116, in _wait_for_tstate_lock
+    if lock.acquire(block, timeout):
+KeyboardInterrupt:

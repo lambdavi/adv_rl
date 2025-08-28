@@ -1,0 +1,41 @@
+{
+  "os":  "macOS-15.5-arm64-arm-64bit",
+  "python":  "CPython 3.10.16",
+  "startedAt":  "2025-08-28T15:47:27.262766Z",
+  "args":  [
+    "--num_envs",
+    "32",
+    "--track"
+  ],
+  "program":  "/Users/davidebuoso/Desktop/dev/adv_fail/sac_adv2.py",
+  "codePath":  "sac_adv2.py",
+  "codePathLocal":  "sac_adv2.py",
+  "git":  {
+    "remote":  "git@github.com:lambdavi/adv_rl.git",
+    "commit":  "1785e6e5c5e2fb5ea543a7bdc243d9aabeafa8f9"
+  },
+  "email":  "daviibuoso@gmail.com",
+  "root":  "/Users/davidebuoso/Desktop/dev/adv_fail",
+  "host":  "MacBookPro.homenet.telecomitalia.it",
+  "executable":  "/Users/davidebuoso/miniforge3/envs/tdp/bin/python",
+  "cpu_count":  8,
+  "cpu_count_logical":  8,
+  "disk":  {
+    "/":  {
+      "total":  "245107195904",
+      "used":  "210778001408"
+    }
+  },
+  "memory":  {
+    "total":  "17179869184"
+  },
+  "apple":  {
+    "name":  "Apple M1",
+    "ecpuCores":  4,
+    "pcpuCores":  4,
+    "gpuCores":  8,
+    "memoryGb":  16,
+    "ramTotalBytes":  "17179869184"
+  },
+  "writerId":  "mgpqu012birwwv19e5g368rg9mqtkjev"
+}

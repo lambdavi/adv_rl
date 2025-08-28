@@ -1,0 +1,10 @@
+{"time":"2025-08-28T17:53:36.300801+02:00","level":"INFO","msg":"stream: starting","core version":"0.21.1"}
+{"time":"2025-08-28T17:53:36.587651+02:00","level":"INFO","msg":"stream: created new stream","id":"btun9ax5"}
+{"time":"2025-08-28T17:53:36.587743+02:00","level":"INFO","msg":"stream: started","id":"btun9ax5"}
+{"time":"2025-08-28T17:53:36.587787+02:00","level":"INFO","msg":"sender: started","stream_id":"btun9ax5"}
+{"time":"2025-08-28T17:53:36.587779+02:00","level":"INFO","msg":"writer: started","stream_id":"btun9ax5"}
+{"time":"2025-08-28T17:53:36.587813+02:00","level":"INFO","msg":"handler: started","stream_id":"btun9ax5"}
+{"time":"2025-08-28T17:53:47.188179+02:00","level":"WARN","msg":"tensorboard: no root directory","error":"timed out after 10s"}
+{"time":"2025-08-28T17:53:47.18836+02:00","level":"INFO","msg":"tensorboard: tracking new log directory","rootDir":{},"logDir":"LocalOrCloudPath(LocalPath=\"/Users/davidebuoso/Desktop/dev/adv_fail/runs/Hopper-v4__sac__1__1756396415\")","namespace":""}
+{"time":"2025-08-28T17:53:47.18852+02:00","level":"INFO","msg":"tensorboard: saving file","fileLocation":"/Users/davidebuoso/Desktop/dev/adv_fail/runs/Hopper-v4__sac__1__1756396415/events.out.tfevents.1756396417.MacBookPro.homenet.telecomitalia.it.19986.0","runPath":"runs/Hopper-v4__sac__1__1756396415/events.out.tfevents.1756396417.MacBookPro.homenet.telecomitalia.it.19986.0"}
+{"time":"2025-08-28T17:57:18.267473+02:00","level":"INFO","msg":"stream: closing","id":"btun9ax5"}

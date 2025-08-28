@@ -1,0 +1,1519 @@
+diff --git a/sac_adv2.py b/sac_adv2.py
+index 5f3a55e..fc2acba 100644
+--- a/sac_adv2.py
++++ b/sac_adv2.py
+@@ -595,14 +595,14 @@ if __name__ == "__main__":
+                     actor_loss = (alpha * log_pi - min_qf_pi).mean()
+ 
+                     # Failure buffer actor penalty
+-                    if len(failure_buffer.clusters) > 0:
+-                        with torch.no_grad():
+-                            danger_penalty = failure_buffer.compute_penalty(obs)
+-                        danger_penalty = torch.FloatTensor(danger_penalty).to(device)
+-
+-                        # add penalty term
+-                        actor_loss += args.failure_penalty_weight * danger_penalty.mean()
+-
++                    if args.use_failure_buffer and failure_buffer is not None:
++                        if len(failure_buffer.clusters) > 0:
++                            with torch.no_grad():
++                                danger_penalty = failure_buffer.compute_penalty(obs)
++                            danger_penalty = torch.FloatTensor(danger_penalty).to(device)
++
++                            # add penalty term
++                            actor_loss += args.failure_penalty_weight * danger_penalty.mean()
+ 
+                     actor_optimizer.zero_grad()
+                     actor_loss.backward()
+diff --git a/test-CartPole.py b/test-CartPole.py
+deleted file mode 100644
+index cc3c482..0000000
+--- a/test-CartPole.py
++++ /dev/null
+@@ -1,408 +0,0 @@
+-import torch
+-import torch.nn as nn
+-import torch.optim as optim
+-import torch.nn.functional as F
+-import numpy as np
+-import random
+-from collections import deque
+-import gymnasium as gym
+-import matplotlib.pyplot as plt
+-
+-class ReplayBuffer:
+-    def __init__(self, capacity):
+-        self.buffer = deque(maxlen=capacity)
+-    
+-    def push(self, state, action, reward, next_state, done):
+-        self.buffer.append((state, action, reward, next_state, done))
+-    
+-    def sample(self, batch_size):
+-        batch = random.sample(self.buffer, batch_size)
+-        states, actions, rewards, next_states, dones = zip(*batch)
+-        return (np.array(states), np.array(actions), np.array(rewards), 
+-                np.array(next_states), np.array(dones))
+-    
+-    def sample_states(self, batch_size=None):
+-        """Sample just the states (for failure buffer)"""
+-        if batch_size is None:
+-            batch_size = min(len(self.buffer), 64)
+-        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
+-        states = [item[0] for item in batch]
+-        return np.array(states)
+-    
+-    def __len__(self):
+-        return len(self.buffer)
+-
+-class Actor(nn.Module):
+-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+-        super(Actor, self).__init__()
+-        self.fc1 = nn.Linear(state_dim, hidden_dim)
+-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+-        self.fc3 = nn.Linear(hidden_dim, action_dim)
+-        
+-    def forward(self, state):
+-        x = F.relu(self.fc1(state))
+-        x = F.relu(self.fc2(x))
+-        # Output logits; probabilities via sigmoid for Bernoulli policy
+-        logits = self.fc3(x)
+-        return logits
+-
+-class Critic(nn.Module):
+-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+-        super(Critic, self).__init__()
+-        self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
+-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+-        self.fc3 = nn.Linear(hidden_dim, 1)
+-        
+-    def forward(self, state, action):
+-        x = torch.cat([state, action], dim=1)
+-        x = F.relu(self.fc1(x))
+-        x = F.relu(self.fc2(x))
+-        q_value = self.fc3(x)
+-        return q_value
+-
+-class FailureAwareSAC:
+-    def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, tau=0.005, use_failure_buffer=True):
+-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+-        self.gamma = gamma
+-        self.tau = tau
+-        self.use_failure_buffer = use_failure_buffer
+-        
+-        # Networks
+-        self.actor = Actor(state_dim, action_dim).to(self.device)
+-        self.critic1 = Critic(state_dim, action_dim).to(self.device)
+-        self.critic2 = Critic(state_dim, action_dim).to(self.device)
+-        self.target_critic1 = Critic(state_dim, action_dim).to(self.device)
+-        self.target_critic2 = Critic(state_dim, action_dim).to(self.device)
+-        
+-        # Copy params to target networks
+-        self.target_critic1.load_state_dict(self.critic1.state_dict())
+-        self.target_critic2.load_state_dict(self.critic2.state_dict())
+-        
+-        # Optimizers
+-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
+-        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=lr)
+-        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=lr)
+-        
+-        # Entropy temperature (alpha) with tuning
+-        self.log_alpha = torch.tensor(np.log(0.2), requires_grad=True, device=self.device)
+-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
+-        self.target_entropy = np.log(2.0)  # Bernoulli max entropy
+-        
+-        # Replay buffers - YOUR NOVEL DUAL BUFFER APPROACH!
+-        self.experience_buffer = ReplayBuffer(100000)
+-        self.failure_buffer = ReplayBuffer(10000)  # Separate buffer for failures
+-        
+-        # Adversarial parameters
+-        self.failure_penalty_weight = 0.5  # beta for reward shaping
+-        self.failure_distance_scale = 2.0   # Scale for distance computation
+-        self.mixed_failure_fraction = 0.3   # fraction of minibatch from failure buffer
+-        
+-        # Logging
+-        self.failure_penalties = []
+-        self.training_losses = []
+-        
+-    def select_action(self, state):
+-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+-        with torch.no_grad():
+-            logits = self.actor(state)
+-            probs = torch.sigmoid(logits)
+-            p = probs.cpu().numpy()[0][0]
+-        action = 1 if random.random() < p else 0
+-        return action, np.array([p], dtype=np.float32)
+-    
+-    def store_experience(self, state, action, reward, next_state, done):
+-        # Store in regular experience buffer
+-        action_continuous = np.array([action], dtype=np.float32)
+-        self.experience_buffer.push(state, action_continuous, reward, next_state, done)
+-        
+-        # Store failures separately (only if enabled)
+-        if self.use_failure_buffer and done and reward <= 0:
+-            self.failure_buffer.push(state, action_continuous, reward, next_state, done)
+-    
+-    def compute_failure_penalty(self, current_states):
+-        """Compute per-state penalties for proximity to failure states.
+-        Returns tensor of shape [batch, 1]."""
+-        batch_size = current_states.shape[0]
+-        if not self.use_failure_buffer or len(self.failure_buffer) < 10:
+-            penalties = torch.zeros((batch_size, 1), device=self.device)
+-            self.failure_penalties.append(0.0)
+-            return penalties
+-        
+-        # Sample failure states
+-        failure_states = self.failure_buffer.sample_states(min(64, len(self.failure_buffer)))
+-        failure_states = torch.FloatTensor(failure_states).to(self.device)
+-        
+-        # Compute distances between current states and failure states
+-        current_expanded = current_states.unsqueeze(1)  # [batch, 1, state_dim]
+-        failure_expanded = failure_states.unsqueeze(0)   # [1, failure_batch, state_dim]
+-        
+-        # L2 distance in state space
+-        distances = torch.norm(current_expanded - failure_expanded, dim=2, p=2)  # [batch, failure_batch]
+-        min_distances = torch.min(distances, dim=1)[0].unsqueeze(1)  # [batch,1]
+-        
+-        # Exponential penalty - stronger as you get closer to failure states
+-        penalties = self.failure_penalty_weight * torch.exp(-min_distances / self.failure_distance_scale)  # [batch,1]
+-        
+-        # Log average for analysis
+-        self.failure_penalties.append(penalties.mean().item())
+-        return penalties
+-
+-    def sample_mixed_minibatch(self, batch_size):
+-        """Sample a mixed minibatch from experience and failure buffers."""
+-        if not self.use_failure_buffer or len(self.failure_buffer) == 0 or self.mixed_failure_fraction <= 0.0:
+-            return self.experience_buffer.sample(batch_size)
+-        num_fail_desired = int(batch_size * self.mixed_failure_fraction)
+-        num_fail_available = min(len(self.failure_buffer), num_fail_desired)
+-        num_exp_needed = batch_size - num_fail_available
+-        num_exp_available = min(len(self.experience_buffer), num_exp_needed)
+-        if num_exp_available < num_exp_needed:
+-            # fallback: reduce batch size if buffers are small
+-            batch_size = num_fail_available + num_exp_available
+-        
+-        fail_states = fail_actions = fail_rewards = fail_next_states = fail_dones = np.array([])
+-        if num_fail_available > 0:
+-            fs, fa, fr, fns, fd = self.failure_buffer.sample(num_fail_available)
+-            fail_states, fail_actions, fail_rewards, fail_next_states, fail_dones = fs, fa, fr, fns, fd
+-        
+-        if batch_size - num_fail_available > 0:
+-            es, ea, er, ens, ed = self.experience_buffer.sample(batch_size - num_fail_available)
+-            if num_fail_available > 0:
+-                states = np.concatenate([fail_states, es], axis=0)
+-                actions = np.concatenate([fail_actions, ea], axis=0)
+-                rewards = np.concatenate([fail_rewards, er], axis=0)
+-                next_states = np.concatenate([fail_next_states, ens], axis=0)
+-                dones = np.concatenate([fail_dones, ed], axis=0)
+-            else:
+-                states, actions, rewards, next_states, dones = es, ea, er, ens, ed
+-        else:
+-            states, actions, rewards, next_states, dones = fail_states, fail_actions, fail_rewards, fail_next_states, fail_dones
+-        
+-        # Shuffle the combined batch
+-        idx = np.arange(states.shape[0])
+-        np.random.shuffle(idx)
+-        return states[idx], actions[idx], rewards[idx], next_states[idx], dones[idx]
+-    
+-    def update(self, batch_size=64):
+-        if len(self.experience_buffer) < max(8, int(batch_size * (1 - (self.mixed_failure_fraction if self.use_failure_buffer else 0.0)))):
+-            return
+-        
+-        # Sample mixed minibatch
+-        states, actions, rewards, next_states, dones = self.sample_mixed_minibatch(batch_size)
+-        
+-        states = torch.FloatTensor(states).to(self.device)
+-        actions = torch.FloatTensor(actions).to(self.device)
+-        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
+-        next_states = torch.FloatTensor(next_states).to(self.device)
+-        dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
+-        
+-        # Reward shaping via failure proximity (detach to avoid gradients through reward)
+-        with torch.no_grad():
+-            penalties = self.compute_failure_penalty(states)
+-            shaped_rewards = rewards - penalties
+-        
+-        alpha = self.log_alpha.exp()
+-
+-        # Critic update (discrete SAC with entropy in target)
+-        with torch.no_grad():
+-            next_logits = self.actor(next_states)
+-            next_probs = torch.sigmoid(next_logits).clamp(1e-6, 1 - 1e-6)
+-            next_log_p = torch.log(next_probs)
+-            next_log_1mp = torch.log(1 - next_probs)
+-
+-            a1 = torch.ones_like(next_probs)
+-            a0 = torch.zeros_like(next_probs)
+-            tq1_a1 = self.target_critic1(next_states, a1)
+-            tq2_a1 = self.target_critic2(next_states, a1)
+-            tq1_a0 = self.target_critic1(next_states, a0)
+-            tq2_a0 = self.target_critic2(next_states, a0)
+-            tmin_a1 = torch.min(tq1_a1, tq2_a1)
+-            tmin_a0 = torch.min(tq1_a0, tq2_a0)
+-
+-            v_next = next_probs * (tmin_a1 - alpha * next_log_p) + (1 - next_probs) * (tmin_a0 - alpha * next_log_1mp)
+-            target_q = shaped_rewards + self.gamma * v_next * (1 - dones)
+-        
+-        current_q1 = self.critic1(states, actions)
+-        current_q2 = self.critic2(states, actions)
+-        
+-        critic1_loss = F.mse_loss(current_q1, target_q)
+-        critic2_loss = F.mse_loss(current_q2, target_q)
+-        
+-        self.critic1_optimizer.zero_grad()
+-        critic1_loss.backward()
+-        self.critic1_optimizer.step()
+-        
+-        self.critic2_optimizer.zero_grad()
+-        critic2_loss.backward()
+-        self.critic2_optimizer.step()
+-        
+-        # Actor update: expectation over discrete actions with entropy
+-        logits = self.actor(states)
+-        probs = torch.sigmoid(logits).clamp(1e-6, 1 - 1e-6)
+-        log_p = torch.log(probs)
+-        log_1mp = torch.log(1 - probs)
+-
+-        a1 = torch.ones_like(probs)
+-        a0 = torch.zeros_like(probs)
+-        q1_a1 = self.critic1(states, a1)
+-        q2_a1 = self.critic2(states, a1)
+-        q1_a0 = self.critic1(states, a0)
+-        q2_a0 = self.critic2(states, a0)
+-        min_q_a1 = torch.min(q1_a1, q2_a1)
+-        min_q_a0 = torch.min(q1_a0, q2_a0)
+-
+-        actor_loss = (probs * (alpha * log_p - min_q_a1) + (1 - probs) * (alpha * log_1mp - min_q_a0)).mean()
+-
+-        self.actor_optimizer.zero_grad()
+-        actor_loss.backward()
+-        self.actor_optimizer.step()
+-
+-        # Temperature tuning
+-        with torch.no_grad():
+-            entropy = -(probs * log_p + (1 - probs) * log_1mp)
+-        alpha_loss = -(self.log_alpha * (entropy.detach() - self.target_entropy)).mean()
+-        self.alpha_optimizer.zero_grad()
+-        alpha_loss.backward()
+-        self.alpha_optimizer.step()
+-        
+-        # Soft update target networks
+-        for param, target_param in zip(self.critic1.parameters(), self.target_critic1.parameters()):
+-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+-        
+-        for param, target_param in zip(self.critic2.parameters(), self.target_critic2.parameters()):
+-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+-        
+-        # Log training info
+-        self.training_losses.append({
+-            'actor_loss': actor_loss.item(),
+-            'alpha': alpha.item(),
+-            'critic1_loss': critic1_loss.item(),
+-            'critic2_loss': critic2_loss.item()
+-        })
+-
+-def train_failure_aware_sac(use_failure_buffer=True):
+-    env = gym.make('CartPole-v1')
+-    state_dim = env.observation_space.shape[0]
+-    action_dim = 1  # Continuous representation of discrete action
+-    
+-    agent = FailureAwareSAC(state_dim, action_dim, use_failure_buffer=use_failure_buffer)
+-    
+-    episodes = 1000
+-    max_steps = 500
+-    episode_rewards = []
+-    failure_counts = []
+-    
+-    print("🚀 Training Failure-Aware SAC on CartPole!")
+-    mode = "ENABLED" if use_failure_buffer else "DISABLED"
+-    print(f"💡 Failure buffer is {mode} (reward shaping + mixed sampling)")
+-    
+-    for episode in range(episodes):
+-        state, _ = env.reset()
+-        total_reward = 0
+-        failures_this_episode = 0
+-        
+-        for step in range(max_steps):
+-            action, _ = agent.select_action(state)
+-            next_state, reward, terminated, truncated, _ = env.step(action)
+-            done = terminated or truncated
+-            
+-            # Modified reward for CartPole failure detection
+-            if done and step < max_steps - 1:  # Early termination = failure
+-                reward = -1  # Failure penalty
+-                failures_this_episode += 1
+-            
+-            agent.store_experience(state, action, reward, next_state, done)
+-            
+-            if len(agent.experience_buffer) > 64:
+-                agent.update()
+-            
+-            state = next_state
+-            total_reward += reward
+-            
+-            if done:
+-                break
+-        
+-        episode_rewards.append(total_reward)
+-        failure_counts.append(failures_this_episode)
+-        
+-        if episode % 50 == 0:
+-            avg_reward = np.mean(episode_rewards[-50:])
+-            failure_buffer_size = len(agent.failure_buffer)
+-            recent_penalty = agent.failure_penalties[-1] if agent.failure_penalties else 0
+-            print(f"Episode {episode}: Avg Reward: {avg_reward:.2f}, "
+-                  f"Failure Buffer: {failure_buffer_size}, "
+-                  f"Recent Failure Penalty: {recent_penalty:.4f}")
+-    
+-    return agent, episode_rewards, failure_counts
+-
+-def plot_results(agent, episode_rewards, failure_counts):
+-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+-    
+-    # Episode rewards
+-    axes[0,0].plot(episode_rewards)
+-    axes[0,0].set_title('Episode Rewards Over Time')
+-    axes[0,0].set_xlabel('Episode')
+-    axes[0,0].set_ylabel('Total Reward')
+-    axes[0,0].grid(True)
+-    
+-    # Failure penalties over time
+-    if agent.failure_penalties:
+-        axes[0,1].plot(agent.failure_penalties)
+-        axes[0,1].set_title('Failure Penalty Over Training Steps')
+-        axes[0,1].set_xlabel('Training Step')
+-        axes[0,1].set_ylabel('Failure Penalty')
+-        axes[0,1].grid(True)
+-    
+-    # Failure buffer growth
+-    axes[1,0].plot([len(agent.failure_buffer) for _ in range(len(episode_rewards))])
+-    axes[1,0].set_title('Failure Buffer Size')
+-    axes[1,0].set_xlabel('Episode')
+-    axes[1,0].set_ylabel('Number of Stored Failures')
+-    axes[1,0].grid(True)
+-    
+-    # Training losses
+-    if agent.training_losses:
+-        actor_losses = [loss['actor_loss'] for loss in agent.training_losses[-500:]]
+-        failure_penalties = [loss['failure_penalty'] for loss in agent.training_losses[-500:]]
+-        
+-        axes[1,1].plot(actor_losses, label='Actor Loss', alpha=0.7)
+-        axes[1,1].plot(failure_penalties, label='Failure Penalty', alpha=0.7)
+-        axes[1,1].set_title('Training Losses (Last 500 steps)')
+-        axes[1,1].set_xlabel('Training Step')
+-        axes[1,1].set_ylabel('Loss')
+-        axes[1,1].legend()
+-        axes[1,1].grid(True)
+-    
+-    plt.tight_layout()
+-    plt.show()
+-    
+-    print(f"\n📊 Training Complete!")
+-    print(f"Final failure buffer size: {len(agent.failure_buffer)}")
+-    print(f"Average reward last 100 episodes: {np.mean(episode_rewards[-100:]):.2f}")
+-    print(f"Your dual-buffer approach stored {len(agent.failure_buffer)} failure experiences!")
+-
+-if __name__ == "__main__":
+-    import argparse
+-    parser = argparse.ArgumentParser()
+-    parser.add_argument("--use-failure-buffer", action=argparse.BooleanOptionalAction, default=True,
+-                        help="Enable failure buffer reward shaping and mixed sampling")
+-    parser.add_argument("--render-test", action=argparse.BooleanOptionalAction, default=False,
+-                        help="Render a short test run after training")
+-    args = parser.parse_args()
+-
+-    # Run the experiment!
+-    agent, rewards, failures = train_failure_aware_sac(use_failure_buffer=args.use_failure_buffer)
+-    plot_results(agent, rewards, failures)
+-    
+-    if args.render_test:
+-        # Test the trained agent
+-        print("\n🎮 Testing trained agent...")
+-        env = gym.make('CartPole-v1', render_mode='human')
+-        state, _ = env.reset()
+-        
+-        for _ in range(1000):
+-            action, _ = agent.select_action(state)
+-            state, _, terminated, truncated, _ = env.step(action)
+-            if terminated or truncated:
+-                break
+-        
+-        env.close()
+\ No newline at end of file
+diff --git a/test-Lunar.py b/test-Lunar.py
+deleted file mode 100644
+index 65634dd..0000000
+--- a/test-Lunar.py
++++ /dev/null
+@@ -1,645 +0,0 @@
+-import torch
+-import torch.nn as nn
+-import torch.optim as optim
+-import torch.nn.functional as F
+-import numpy as np
+-import random
+-from collections import deque
+-import gymnasium as gym
+-import matplotlib.pyplot as plt
+-
+-class ReplayBuffer:
+-    def __init__(self, capacity):
+-        self.buffer = deque(maxlen=capacity)
+-    
+-    def push(self, state, action, reward, next_state, done):
+-        # Convert action to appropriate format for storage
+-        if isinstance(action, (int, np.integer)):
+-            # Discrete action - store as integer
+-            action = int(action)
+-        elif isinstance(action, np.ndarray):
+-            # Continuous action - store as array
+-            action = action.copy()
+-        else:
+-            # Fallback - convert to appropriate type
+-            action = np.array(action)
+-        
+-        self.buffer.append((state, action, reward, next_state, done))
+-    
+-    def sample(self, batch_size):
+-        batch = random.sample(self.buffer, batch_size)
+-        states, actions, rewards, next_states, dones = zip(*batch)
+-        
+-        # Convert to tensors, handling different action types
+-        states_tensor = torch.FloatTensor(np.array(states))
+-        next_states_tensor = torch.FloatTensor(np.array(next_states))
+-        rewards_tensor = torch.FloatTensor(np.array(rewards))
+-        dones_tensor = torch.FloatTensor(np.array(dones))
+-        
+-        # Handle actions - could be mixed types
+-        if all(isinstance(a, (int, np.integer)) for a in actions):
+-            # All discrete actions
+-            actions_tensor = torch.LongTensor(actions)
+-        else:
+-            # Mixed or continuous actions
+-            actions_tensor = torch.FloatTensor(actions)
+-        
+-        return (states_tensor, actions_tensor, rewards_tensor, next_states_tensor, dones_tensor)
+-    
+-    def __len__(self):
+-        return len(self.buffer)
+-
+-class FailureClusterBuffer:
+-    def __init__(self, max_clusters=20, distance_threshold=0.5):
+-        self.clusters = []  # List of (centroid, states, weight)
+-        self.max_clusters = max_clusters
+-        self.distance_threshold = distance_threshold
+-    
+-    def add_failure_state(self, state):
+-        state = np.array(state)
+-        
+-        # Find closest cluster
+-        min_distance = float('inf')
+-        closest_cluster_idx = -1
+-        
+-        for i, (centroid, states, weight) in enumerate(self.clusters):
+-            distance = np.linalg.norm(state - centroid)
+-            if distance < min_distance:
+-                min_distance = distance
+-                closest_cluster_idx = i
+-        
+-        # If close enough to existing cluster, add to it
+-        if closest_cluster_idx >= 0 and min_distance < self.distance_threshold:
+-            centroid, states, weight = self.clusters[closest_cluster_idx]
+-            states.append(state)
+-            # Update centroid
+-            new_centroid = np.mean(states, axis=0)
+-            self.clusters[closest_cluster_idx] = (new_centroid, states, weight + 1)
+-        else:
+-            # Create new cluster
+-            if len(self.clusters) >= self.max_clusters:
+-                # Merge closest clusters
+-                self._merge_closest_clusters()
+-            self.clusters.append((state, [state], 1))
+-    
+-    def _merge_closest_clusters(self):
+-        if len(self.clusters) < 2:
+-            return
+-        
+-        min_distance = float('inf')
+-        merge_i, merge_j = 0, 1
+-        
+-        for i in range(len(self.clusters)):
+-            for j in range(i + 1, len(self.clusters)):
+-                distance = np.linalg.norm(self.clusters[i][0] - self.clusters[j][0])
+-                if distance < min_distance:
+-                    min_distance = distance
+-                    merge_i, merge_j = i, j
+-        
+-        # Merge clusters
+-        centroid1, states1, weight1 = self.clusters[merge_i]
+-        centroid2, states2, weight2 = self.clusters[merge_j]
+-        
+-        all_states = states1 + states2
+-        new_centroid = np.mean(all_states, axis=0)
+-        new_weight = weight1 + weight2
+-        
+-        # Remove old clusters and add merged one
+-        self.clusters.pop(max(merge_i, merge_j))
+-        self.clusters.pop(min(merge_i, merge_j))
+-        self.clusters.append((new_centroid, all_states, new_weight))
+-    
+-    def compute_penalty(self, state):
+-        if not self.clusters:
+-            return 0.0
+-        
+-        state = np.array(state)
+-        min_distance = float('inf')
+-        
+-        for centroid, states, weight in self.clusters:
+-            distance = np.linalg.norm(state - centroid)
+-            # Weight by cluster size (bigger clusters = more dangerous)
+-            weighted_distance = distance / (weight ** 0.5)
+-            min_distance = min(min_distance, weighted_distance)
+-        
+-        # Exponential penalty based on distance
+-        return np.exp(-min_distance)
+-    
+-    def sample_danger_states(self, n_samples):
+-        if not self.clusters:
+-            return []
+-        
+-        # Sample proportionally to cluster weights
+-        weights = [weight for _, _, weight in self.clusters]
+-        total_weight = sum(weights)
+-        
+-        if total_weight == 0:
+-            return []
+-        
+-        sampled_states = []
+-        for _ in range(n_samples):
+-            # Choose cluster based on weight
+-            cluster_idx = np.random.choice(len(self.clusters), p=[w/total_weight for w in weights])
+-            centroid, states, weight = self.clusters[cluster_idx]
+-            
+-            # Sample from cluster with some noise
+-            if states:
+-                base_state = random.choice(states)
+-                noise = np.random.normal(0, 0.1, len(base_state))
+-                sampled_state = base_state + noise
+-                sampled_states.append(sampled_state)
+-        
+-        return sampled_states
+-
+-class Actor(nn.Module):
+-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+-        super(Actor, self).__init__()
+-        self.action_dim = action_dim
+-        self.fc1 = nn.Linear(state_dim, hidden_dim)
+-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+-        self.fc3 = nn.Linear(hidden_dim, action_dim)
+-        
+-    def forward(self, state):
+-        x = F.relu(self.fc1(state))
+-        x = F.relu(self.fc2(x))
+-        logits = self.fc3(x)
+-        return logits
+-    
+-    def sample_action(self, state):
+-        logits = self.forward(state)
+-        probs = F.softmax(logits, dim=-1)
+-        dist = torch.distributions.Categorical(probs)
+-        action = dist.sample()
+-        log_prob = dist.log_prob(action)
+-        entropy = dist.entropy()
+-        return action, log_prob, entropy
+-
+-class Critic(nn.Module):
+-    def __init__(self, state_dim, action_dim, action_space_type, hidden_dim=256):
+-        super(Critic, self).__init__()
+-        self.action_space_type = action_space_type
+-        self.action_dim = action_dim
+-        
+-        self.fc1 = nn.Linear(state_dim, hidden_dim)
+-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+-        
+-        if action_space_type == 'discrete':
+-            # For discrete actions, output Q-value for each action
+-            self.fc3 = nn.Linear(hidden_dim, action_dim)
+-        else:
+-            # For continuous actions, take state and action as input
+-            self.fc3 = nn.Linear(hidden_dim + action_dim, 1)
+-        
+-    def forward(self, state, action=None):
+-        x = F.relu(self.fc1(state))
+-        x = F.relu(self.fc2(x))
+-        
+-        if self.action_space_type == 'discrete':
+-            # Output Q-values for each action
+-            q_values = self.fc3(x)
+-            if action is not None:
+-                # If action is provided, return Q-value for that action
+-                return q_values.gather(1, action.long())
+-            return q_values
+-        else:
+-            # For continuous actions, concatenate state and action
+-            if action is not None:
+-                x = torch.cat([x, action], dim=-1)
+-            return self.fc3(x)
+-
+-class FailureAwareSAC:
+-    def __init__(self, state_dim, action_dim, action_space_type, lr=3e-4, gamma=0.99, tau=0.005, use_failure_buffer=True):
+-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+-        self.gamma = gamma
+-        self.tau = tau
+-        self.use_failure_buffer = use_failure_buffer
+-        self.action_space_type = action_space_type
+-        self.action_dim = action_dim
+-        
+-        # Networks
+-        self.actor = Actor(state_dim, action_dim).to(self.device)
+-        self.critic1 = Critic(state_dim, action_dim, action_space_type).to(self.device)
+-        self.critic2 = Critic(state_dim, action_dim, action_space_type).to(self.device)
+-        self.target_critic1 = Critic(state_dim, action_dim, action_space_type).to(self.device)
+-        self.target_critic2 = Critic(state_dim, action_dim, action_space_type).to(self.device)
+-        
+-        # Copy target networks
+-        self.target_critic1.load_state_dict(self.critic1.state_dict())
+-        self.target_critic2.load_state_dict(self.critic2.state_dict())
+-        
+-        # Optimizers
+-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
+-        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=lr)
+-        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=lr)
+-        
+-        # Temperature parameter for entropy regularization
+-        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
+-        
+-        # Target entropy for temperature tuning
+-        if action_space_type == 'discrete':
+-            self.target_entropy = -np.log(1.0 / action_dim)  # For discrete uniform policy
+-        else:
+-            self.target_entropy = -action_dim  # For continuous actions
+-        
+-        # Buffers
+-        self.replay_buffer = ReplayBuffer(100000)
+-        if use_failure_buffer:
+-            self.failure_cluster_buffer = FailureClusterBuffer()
+-        
+-        # Training tracking
+-        self.training_losses = []
+-        self.failure_penalties = []
+-        
+-        # Failure buffer parameters
+-        self.failure_penalty_weight = 0.5  # beta for reward shaping
+-        self.failure_distance_scale = 2.0   # Scale for distance computation
+-        self.mixed_failure_fraction = 0.3   # fraction of minibatch from failure buffer
+-    
+-    def select_action(self, state, evaluate=False):
+-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+-        
+-        if evaluate:
+-            if self.action_space_type == 'discrete':
+-                with torch.no_grad():
+-                    logits = self.actor(state)
+-                    probs = F.softmax(logits, dim=-1)
+-                    action = torch.argmax(probs, dim=-1)
+-            else:
+-                with torch.no_grad():
+-                    mean, _ = self.actor(state)
+-                    action = torch.tanh(mean)  # Clamp to [-1, 1]
+-        else:
+-            action, _, _ = self.actor.sample_action(state)
+-            if self.action_space_type == 'continuous':
+-                action = torch.tanh(action)  # Clamp to [-1, 1]
+-        
+-        # Return appropriate format based on action space type
+-        if self.action_space_type == 'discrete':
+-            return action.cpu().numpy().item()  # Return scalar for discrete actions
+-        else:
+-            return action.cpu().numpy().flatten()  # Return array for continuous actions
+-    
+-    def compute_failure_penalty(self, states):
+-        if not self.use_failure_buffer or not self.failure_cluster_buffer.clusters:
+-            return torch.zeros(states.shape[0], device=self.device)
+-        
+-        # Vectorized computation for better performance
+-        states_np = states.cpu().numpy()
+-        penalties = np.zeros(len(states_np))
+-        
+-        # Compute distances to all clusters at once
+-        for centroid, states_list, weight in self.failure_cluster_buffer.clusters:
+-            # Vectorized distance computation
+-            distances = np.linalg.norm(states_np - centroid, axis=1)
+-            # Weight by cluster size (bigger clusters = more dangerous)
+-            weighted_distances = distances / (weight ** 0.5)
+-            # Update penalties with minimum distance
+-            penalties = np.minimum(penalties, weighted_distances)
+-        
+-        # Exponential penalty based on distance
+-        penalties = np.exp(-penalties)
+-        
+-        return torch.FloatTensor(penalties).to(self.device) * self.failure_penalty_weight
+-    
+-    def sample_mixed_minibatch(self, batch_size):
+-        if not self.use_failure_buffer or not self.failure_cluster_buffer.clusters:
+-            return self.replay_buffer.sample(batch_size)
+-        
+-        # Sample from regular buffer
+-        regular_batch_size = int(batch_size * (1 - self.mixed_failure_fraction))
+-        regular_batch = self.replay_buffer.sample(regular_batch_size)
+-        
+-        # Sample from failure clusters
+-        failure_batch_size = batch_size - regular_batch_size
+-        danger_states = self.failure_cluster_buffer.sample_danger_states(failure_batch_size)
+-        
+-        if danger_states:
+-            # Create synthetic experiences from danger states
+-            failure_batch = []
+-            for state in danger_states:
+-                # Random action, negative reward, same state (terminal)
+-                if self.action_space_type == 'discrete':
+-                    action = np.random.randint(0, self.action_dim)
+-                else:
+-                    action = np.random.uniform(-1, 1, self.action_dim)
+-                
+-                failure_batch.append((state, action, -10.0, state, 1.0))
+-            
+-            # Combine batches
+-            all_states = list(regular_batch[0]) + [exp[0] for exp in failure_batch]
+-            all_actions = list(regular_batch[1]) + [exp[1] for exp in failure_batch]
+-            all_rewards = list(regular_batch[2]) + [exp[2] for exp in failure_batch]
+-            all_next_states = list(regular_batch[3]) + [exp[3] for exp in failure_batch]
+-            all_dones = list(regular_batch[4]) + [exp[4] for exp in failure_batch]
+-            
+-            return (torch.FloatTensor(all_states), torch.FloatTensor(all_actions),
+-                    torch.FloatTensor(all_rewards), torch.FloatTensor(all_next_states),
+-                    torch.FloatTensor(all_dones))
+-        else:
+-            return regular_batch
+-    
+-    def update(self, batch_size=64):
+-        if len(self.replay_buffer) < batch_size:
+-            return
+-        
+-        # Sample mixed minibatch
+-        states, actions, rewards, next_states, dones = self.sample_mixed_minibatch(batch_size)
+-        states = states.to(self.device)
+-        actions = actions.to(self.device)
+-        rewards = rewards.to(self.device)
+-        next_states = next_states.to(self.device)
+-        dones = dones.to(self.device)
+-        
+-        # Reward shaping via failure proximity (detach to avoid gradients through reward)
+-        with torch.no_grad():
+-            penalties = self.compute_failure_penalty(states)
+-            shaped_rewards = rewards - penalties
+-            penalty_mean = penalties.mean().item() if penalties.numel() > 0 else 0.0
+-        
+-        # Update critics
+-        # Compute target Q
+-        with torch.no_grad():
+-            if self.action_space_type == 'discrete':
+-                # For discrete actions, compute target Q using next state action probabilities
+-                next_action, next_log_prob, next_entropy = self.actor.sample_action(next_states)
+-                next_q1 = self.target_critic1(next_states)
+-                next_q2 = self.target_critic2(next_states)
+-                
+-                # Get Q-values for the sampled next actions
+-                next_q1_action = next_q1.gather(1, next_action.unsqueeze(1))
+-                next_q2_action = next_q2.gather(1, next_action.unsqueeze(1))
+-                next_q = torch.min(next_q1_action, next_q2_action).squeeze(1)
+-                
+-                # Add entropy term
+-                alpha = self.log_alpha.exp()
+-                next_q = next_q - alpha * next_log_prob
+-            else:
+-                # For continuous actions
+-                next_action, next_log_prob, next_entropy = self.actor.sample_action(next_states)
+-                next_q1 = self.target_critic1(next_states, next_action)
+-                next_q2 = self.target_critic2(next_states, next_action)
+-                next_q = torch.min(next_q1, next_q2)
+-                
+-                # Add entropy term
+-                alpha = self.log_alpha.exp()
+-                next_q = next_q - alpha * next_log_prob
+-        
+-            target_q = shaped_rewards + self.gamma * (1 - dones) * next_q
+-        
+-        # Current Q-values
+-        if self.action_space_type == 'discrete':
+-            current_q1 = self.critic1(states)
+-            current_q2 = self.critic2(states)
+-            # Get Q-values for taken actions
+-            current_q1 = current_q1.gather(1, actions.long().unsqueeze(1)).squeeze(1)
+-            current_q2 = current_q2.gather(1, actions.long().unsqueeze(1)).squeeze(1)
+-        else:
+-            current_q1 = self.critic1(states, actions)
+-            current_q2 = self.critic2(states, actions)
+-        
+-        # Critic losses
+-        critic1_loss = F.mse_loss(current_q1, target_q)
+-        critic2_loss = F.mse_loss(current_q2, target_q)
+-        
+-        self.critic1_optimizer.zero_grad()
+-        critic1_loss.backward()
+-        self.critic1_optimizer.step()
+-        
+-        self.critic2_optimizer.zero_grad()
+-        critic2_loss.backward()
+-        self.critic2_optimizer.step()
+-        
+-        # Update actor
+-        # Actor loss
+-        if self.action_space_type == 'discrete':
+-            # For discrete actions, compute proper categorical distribution loss
+-            action, log_prob, entropy = self.actor.sample_action(states)
+-            q1 = self.critic1(states)
+-            q2 = self.critic2(states)
+-            
+-            # Get Q-values for the sampled actions
+-            q1_action = q1.gather(1, action.unsqueeze(1))
+-            q2_action = q2.gather(1, action.unsqueeze(1))
+-            q_action = torch.min(q1_action, q2_action).squeeze(1)
+-            
+-            # Actor loss with entropy
+-            alpha = self.log_alpha.exp()
+-            actor_loss = (alpha * log_prob - q_action).mean()
+-        else:
+-            # For continuous actions
+-            action, log_prob, entropy = self.actor.sample_action(states)
+-            q1 = self.critic1(states, action)
+-            q2 = self.critic2(states, action)
+-            q = torch.min(q1, q2)
+-            
+-            # Actor loss with entropy
+-            alpha = self.log_alpha.exp()
+-            actor_loss = (alpha * log_prob - q).mean()
+-        
+-        self.actor_optimizer.zero_grad()
+-        actor_loss.backward()
+-        self.actor_optimizer.step()
+-        
+-        # Update temperature
+-        if self.action_space_type == 'discrete':
+-            # For discrete actions, entropy is already computed in sample_action
+-            alpha_loss = -(self.log_alpha * (entropy + self.target_entropy).detach()).mean()
+-        else:
+-            # For continuous actions, entropy is already computed in sample_action
+-            alpha_loss = -(self.log_alpha * (entropy + self.target_entropy).detach()).mean()
+-        
+-        self.alpha_optimizer.zero_grad()
+-        alpha_loss.backward()
+-        self.alpha_optimizer.step()
+-        
+-        # Update target networks
+-        for target_param, param in zip(self.target_critic1.parameters(), self.critic1.parameters()):
+-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+-        for target_param, param in zip(self.target_critic2.parameters(), self.critic2.parameters()):
+-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+-        
+-        # Log training info (reduced frequency for performance)
+-        if len(self.training_losses) % 10 == 0:  # Log every 10 updates instead of every update
+-            self.training_losses.append({
+-                'actor_loss': actor_loss.item(),
+-                'alpha': alpha.item(),
+-                'critic1_loss': critic1_loss.item(),
+-                'critic2_loss': critic2_loss.item(),
+-                'failure_penalty': penalty_mean
+-            })
+-        
+-        self.failure_penalties.append(penalty_mean)
+-
+-def train_failure_aware_sac(use_failure_buffer=True, episodes=1000, max_steps=500):
+-    env = gym.make('LunarLander-v3')
+-    state_dim = env.observation_space.shape[0]
+-    
+-    # Dynamically determine action space type and dimensions
+-    if isinstance(env.action_space, gym.spaces.Discrete):
+-        action_space_type = 'discrete'
+-        action_dim = env.action_space.n
+-    else:
+-        action_space_type = 'continuous'
+-        action_dim = env.action_space.shape[0]
+-    
+-    print(f"Environment: {env.spec.id}")
+-    print(f"State dimension: {state_dim}")
+-    print(f"Action space type: {action_space_type}")
+-    print(f"Action dimension: {action_dim}")
+-    
+-    agent = FailureAwareSAC(state_dim, action_dim, action_space_type, use_failure_buffer=use_failure_buffer)
+-    
+-    episode_rewards = []
+-    failure_counts = []
+-    
+-    print("🚀 Training Failure-Aware SAC on LunarLander!")
+-    mode = "ENABLED" if use_failure_buffer else "DISABLED"
+-    print(f"💡 Failure buffer is {mode} (danger zone clustering + mixed sampling)")
+-    
+-    # Performance optimization: batch updates
+-    update_frequency = 4  # Update every 4 steps instead of every step
+-    update_counter = 0
+-    
+-    for episode in range(episodes):
+-        state, _ = env.reset()
+-        episode_reward = 0
+-        episode_failures = 0
+-        trajectory = []
+-        
+-        for step in range(max_steps):
+-            # Select action
+-            action = agent.select_action(state)
+-            
+-            # Take action
+-            next_state, reward, done, truncated, info = env.step(action)
+-            done = done or truncated
+-            
+-            # Store experience
+-            agent.replay_buffer.push(state, action, reward, next_state, done)
+-            trajectory.append((state, action, reward, next_state, done))
+-            
+-            # Check for failure (negative reward or crash)
+-            if reward < -50 or done and reward < 0:
+-                episode_failures += 1
+-                if agent.use_failure_buffer:
+-                    # Add final states from trajectory to failure buffer
+-                    for traj_state, _, _, _, _ in trajectory[-5:]:  # Last 5 states
+-                        agent.failure_cluster_buffer.add_failure_state(traj_state)
+-            
+-            episode_reward += reward
+-            state = next_state
+-            
+-            # Update agent (batched for performance)
+-            update_counter += 1
+-            if update_counter % update_frequency == 0:
+-                agent.update()
+-            
+-            if done:
+-                break
+-        
+-        episode_rewards.append(episode_reward)
+-        failure_counts.append(episode_failures)
+-        
+-        if episode % 100 == 0:
+-            avg_reward = np.mean(episode_rewards[-100:])
+-            avg_failures = np.mean(failure_counts[-100:])
+-            failure_buffer_size = len(agent.failure_cluster_buffer.clusters) if agent.use_failure_buffer else 0
+-            print(f"Episode {episode}: Avg Reward = {avg_reward:.2f}, Avg Failures = {avg_failures:.2f}, Failure Clusters = {failure_buffer_size}")
+-    
+-    env.close()
+-    return agent, episode_rewards, failure_counts
+-
+-def plot_results(agent, rewards, failures):
+-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+-    
+-    # Episode rewards
+-    axes[0,0].plot(rewards, alpha=0.6)
+-    axes[0,0].set_title('Episode Rewards')
+-    axes[0,0].set_xlabel('Episode')
+-    axes[0,0].set_ylabel('Reward')
+-    axes[0,0].grid(True)
+-    
+-    # Moving average of rewards
+-    window = 100
+-    if len(rewards) >= window:
+-        moving_avg = [np.mean(rewards[max(0, i-window):i+1]) for i in range(len(rewards))]
+-        axes[0,1].plot(moving_avg, label=f'{window}-episode moving average', linewidth=2)
+-    axes[0,1].set_title('Moving Average Reward')
+-    axes[0,1].set_xlabel('Episode')
+-    axes[0,1].set_ylabel('Average Reward')
+-    axes[0,1].legend()
+-    axes[0,1].grid(True)
+-    
+-    # Failure counts
+-    axes[1,0].plot(failures, alpha=0.6, color='red')
+-    axes[1,0].set_title('Episode Failures')
+-    axes[1,0].set_xlabel('Episode')
+-    axes[1,0].set_ylabel('Number of Failures')
+-    axes[1,0].grid(True)
+-    
+-    # Training losses
+-    if agent.training_losses:
+-        last_losses = agent.training_losses[-500:]
+-        actor_losses = [loss['actor_loss'] for loss in last_losses]
+-        # Prefer logged failure_penalty, fallback to agent.failure_penalties
+-        failure_penalties = []
+-        for loss in last_losses:
+-            penalty = loss.get('failure_penalty')
+-            if penalty is not None:
+-                failure_penalties.append(penalty)
+-        
+-        if not failure_penalties and agent.failure_penalties:
+-            failure_penalties = agent.failure_penalties[-len(actor_losses):] if agent.failure_penalties else []
+-        
+-        axes[1,1].plot(actor_losses, label='Actor Loss', alpha=0.7)
+-        if failure_penalties:
+-            axes[1,1].plot(failure_penalties, label='Failure Penalty', alpha=0.7)
+-        axes[1,1].set_title('Training Losses (Last 500 steps)')
+-        axes[1,1].set_xlabel('Training Step')
+-        axes[1,1].set_ylabel('Loss')
+-        axes[1,1].legend()
+-        axes[1,1].grid(True)
+-    
+-    plt.tight_layout()
+-    plt.show()
+-
+-if __name__ == "__main__":
+-    import argparse
+-    
+-    parser = argparse.ArgumentParser(description='Train Failure-Aware SAC on LunarLander')
+-    parser.add_argument("--use-failure-buffer", action=argparse.BooleanOptionalAction, default=True,
+-                        help="Enable failure buffer (danger zone clustering)")
+-    parser.add_argument("--render-test", action=argparse.BooleanOptionalAction, default=False,
+-                        help="Render a short test run after training")
+-    parser.add_argument("--episodes", type=int, default=1000,
+-                        help="Number of episodes to train for")
+-    parser.add_argument("--max-steps", type=int, default=500,
+-                        help="Maximum number of steps per episode")
+-    args = parser.parse_args()
+-    
+-    # Train the agent
+-    agent, rewards, failures = train_failure_aware_sac(
+-        use_failure_buffer=args.use_failure_buffer,
+-        episodes=args.episodes,
+-        max_steps=args.max_steps
+-    )
+-    
+-    # Plot results
+-    plot_results(agent, rewards, failures)
+-    
+-    # Optional: render a test run
+-    if args.render_test:
+-        print("\n🎬 Rendering test run...")
+-        env = gym.make('LunarLander-v3', render_mode='human')
+-        state, _ = env.reset()
+-        
+-        for _ in range(1000):
+-            action = agent.select_action(state, evaluate=True)
+-            state, reward, done, truncated, _ = env.step(action)
+-            done = done or truncated
+-            
+-            if done:
+-                state, _ = env.reset()
+-        
+-        env.close()
+\ No newline at end of file
+diff --git a/test-Lunar_bkp.py b/test-Lunar_bkp.py
+deleted file mode 100644
+index 704df57..0000000
+--- a/test-Lunar_bkp.py
++++ /dev/null
+@@ -1,418 +0,0 @@
+-import torch
+-import torch.nn as nn
+-import torch.optim as optim
+-import torch.nn.functional as F
+-import numpy as np
+-import random
+-from collections import deque
+-import gymnasium as gym
+-import matplotlib.pyplot as plt
+-
+-class ReplayBuffer:
+-    def __init__(self, capacity):
+-        self.buffer = deque(maxlen=capacity)
+-    
+-    def push(self, state, action, reward, next_state, done):
+-        self.buffer.append((state, action, reward, next_state, done))
+-    
+-    def sample(self, batch_size):
+-        batch = random.sample(self.buffer, batch_size)
+-        states, actions, rewards, next_states, dones = zip(*batch)
+-        return (np.array(states), np.array(actions), np.array(rewards), 
+-                np.array(next_states), np.array(dones))
+-    
+-    def sample_states(self, batch_size=None):
+-        """Sample just the states (for failure buffer)"""
+-        if batch_size is None:
+-            batch_size = min(len(self.buffer), 64)
+-        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
+-        states = [item[0] for item in batch]
+-        return np.array(states)
+-    
+-    def __len__(self):
+-        return len(self.buffer)
+-
+-class Actor(nn.Module):
+-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+-        super(Actor, self).__init__()
+-        self.fc1 = nn.Linear(state_dim, hidden_dim)
+-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+-        self.fc3 = nn.Linear(hidden_dim, action_dim)
+-        
+-    def forward(self, state):
+-        x = F.relu(self.fc1(state))
+-        x = F.relu(self.fc2(x))
+-        # Output logits; probabilities via sigmoid for Bernoulli policy
+-        logits = self.fc3(x)
+-        return logits
+-
+-class Critic(nn.Module):
+-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+-        super(Critic, self).__init__()
+-        self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
+-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+-        self.fc3 = nn.Linear(hidden_dim, 1)
+-        
+-    def forward(self, state, action):
+-        x = torch.cat([state, action], dim=1)
+-        x = F.relu(self.fc1(x))
+-        x = F.relu(self.fc2(x))
+-        q_value = self.fc3(x)
+-        return q_value
+-
+-class FailureAwareSAC:
+-    def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, tau=0.005, use_failure_buffer=True):
+-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+-        self.gamma = gamma
+-        self.tau = tau
+-        self.use_failure_buffer = use_failure_buffer
+-        
+-        # Networks
+-        self.actor = Actor(state_dim, action_dim).to(self.device)
+-        self.critic1 = Critic(state_dim, action_dim).to(self.device)
+-        self.critic2 = Critic(state_dim, action_dim).to(self.device)
+-        self.target_critic1 = Critic(state_dim, action_dim).to(self.device)
+-        self.target_critic2 = Critic(state_dim, action_dim).to(self.device)
+-        
+-        # Copy params to target networks
+-        self.target_critic1.load_state_dict(self.critic1.state_dict())
+-        self.target_critic2.load_state_dict(self.critic2.state_dict())
+-        
+-        # Optimizers
+-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
+-        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=lr)
+-        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=lr)
+-        
+-        # Entropy temperature (alpha) with tuning
+-        self.log_alpha = torch.tensor(np.log(0.2), requires_grad=True, device=self.device)
+-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
+-        self.target_entropy = np.log(2.0)  # Bernoulli max entropy
+-        
+-        # Replay buffers - YOUR NOVEL DUAL BUFFER APPROACH!
+-        self.experience_buffer = ReplayBuffer(100000)
+-        self.failure_buffer = ReplayBuffer(10000)  # Separate buffer for failures
+-        
+-        # Adversarial parameters
+-        self.failure_penalty_weight = 0.5  # beta for reward shaping
+-        self.failure_distance_scale = 2.0   # Scale for distance computation
+-        self.mixed_failure_fraction = 0.3   # fraction of minibatch from failure buffer
+-        
+-        # Logging
+-        self.failure_penalties = []
+-        self.training_losses = []
+-        
+-    def select_action(self, state):
+-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+-        with torch.no_grad():
+-            logits = self.actor(state)
+-            probs = torch.sigmoid(logits)
+-            p = probs.cpu().numpy()[0][0]
+-        action = 1 if random.random() < p else 0
+-        return action, np.array([p], dtype=np.float32)
+-    
+-    def store_experience(self, state, action, reward, next_state, done):
+-        # Store in regular experience buffer
+-        action_continuous = np.array([action], dtype=np.float32)
+-        self.experience_buffer.push(state, action_continuous, reward, next_state, done)
+-        
+-        # Store failures separately (only if enabled)
+-        if self.use_failure_buffer and done and reward <= 0:
+-            self.failure_buffer.push(state, action_continuous, reward, next_state, done)
+-    
+-    def compute_failure_penalty(self, current_states):
+-        """Compute per-state penalties for proximity to failure states.
+-        Returns tensor of shape [batch, 1]."""
+-        batch_size = current_states.shape[0]
+-        if not self.use_failure_buffer or len(self.failure_buffer) < 10:
+-            penalties = torch.zeros((batch_size, 1), device=self.device)
+-            self.failure_penalties.append(0.0)
+-            return penalties
+-        
+-        # Sample failure states
+-        failure_states = self.failure_buffer.sample_states(min(64, len(self.failure_buffer)))
+-        failure_states = torch.FloatTensor(failure_states).to(self.device)
+-        
+-        # Compute distances between current states and failure states
+-        current_expanded = current_states.unsqueeze(1)  # [batch, 1, state_dim]
+-        failure_expanded = failure_states.unsqueeze(0)   # [1, failure_batch, state_dim]
+-        
+-        # L2 distance in state space
+-        distances = torch.norm(current_expanded - failure_expanded, dim=2, p=2)  # [batch, failure_batch]
+-        min_distances = torch.min(distances, dim=1)[0].unsqueeze(1)  # [batch,1]
+-        
+-        # Exponential penalty - stronger as you get closer to failure states
+-        penalties = self.failure_penalty_weight * torch.exp(-min_distances / self.failure_distance_scale)  # [batch,1]
+-        
+-        # Log average for analysis
+-        self.failure_penalties.append(penalties.mean().item())
+-        return penalties
+-
+-    def sample_mixed_minibatch(self, batch_size):
+-        """Sample a mixed minibatch from experience and failure buffers."""
+-        if not self.use_failure_buffer or len(self.failure_buffer) == 0 or self.mixed_failure_fraction <= 0.0:
+-            return self.experience_buffer.sample(batch_size)
+-        num_fail_desired = int(batch_size * self.mixed_failure_fraction)
+-        num_fail_available = min(len(self.failure_buffer), num_fail_desired)
+-        num_exp_needed = batch_size - num_fail_available
+-        num_exp_available = min(len(self.experience_buffer), num_exp_needed)
+-        if num_exp_available < num_exp_needed:
+-            # fallback: reduce batch size if buffers are small
+-            batch_size = num_fail_available + num_exp_available
+-        
+-        fail_states = fail_actions = fail_rewards = fail_next_states = fail_dones = np.array([])
+-        if num_fail_available > 0:
+-            fs, fa, fr, fns, fd = self.failure_buffer.sample(num_fail_available)
+-            fail_states, fail_actions, fail_rewards, fail_next_states, fail_dones = fs, fa, fr, fns, fd
+-        
+-        if batch_size - num_fail_available > 0:
+-            es, ea, er, ens, ed = self.experience_buffer.sample(batch_size - num_fail_available)
+-            if num_fail_available > 0:
+-                states = np.concatenate([fail_states, es], axis=0)
+-                actions = np.concatenate([fail_actions, ea], axis=0)
+-                rewards = np.concatenate([fail_rewards, er], axis=0)
+-                next_states = np.concatenate([fail_next_states, ens], axis=0)
+-                dones = np.concatenate([fail_dones, ed], axis=0)
+-            else:
+-                states, actions, rewards, next_states, dones = es, ea, er, ens, ed
+-        else:
+-            states, actions, rewards, next_states, dones = fail_states, fail_actions, fail_rewards, fail_next_states, fail_dones
+-        
+-        # Shuffle the combined batch
+-        idx = np.arange(states.shape[0])
+-        np.random.shuffle(idx)
+-        return states[idx], actions[idx], rewards[idx], next_states[idx], dones[idx]
+-    
+-    def update(self, batch_size=64):
+-        if len(self.experience_buffer) < max(8, int(batch_size * (1 - (self.mixed_failure_fraction if self.use_failure_buffer else 0.0)))):
+-            return
+-        
+-        # Sample mixed minibatch
+-        states, actions, rewards, next_states, dones = self.sample_mixed_minibatch(batch_size)
+-        
+-        states = torch.FloatTensor(states).to(self.device)
+-        actions = torch.FloatTensor(actions).to(self.device)
+-        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
+-        next_states = torch.FloatTensor(next_states).to(self.device)
+-        dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
+-        
+-        # Reward shaping via failure proximity (detach to avoid gradients through reward)
+-        with torch.no_grad():
+-            penalties = self.compute_failure_penalty(states)
+-            shaped_rewards = rewards - penalties
+-            penalty_mean = penalties.mean().item() if penalties.numel() > 0 else 0.0
+-        
+-        alpha = self.log_alpha.exp()
+-
+-        # Critic update (discrete SAC with entropy in target)
+-        with torch.no_grad():
+-            next_logits = self.actor(next_states)
+-            next_probs = torch.sigmoid(next_logits).clamp(1e-6, 1 - 1e-6)
+-            next_log_p = torch.log(next_probs)
+-            next_log_1mp = torch.log(1 - next_probs)
+-
+-            a1 = torch.ones_like(next_probs)
+-            a0 = torch.zeros_like(next_probs)
+-            tq1_a1 = self.target_critic1(next_states, a1)
+-            tq2_a1 = self.target_critic2(next_states, a1)
+-            tq1_a0 = self.target_critic1(next_states, a0)
+-            tq2_a0 = self.target_critic2(next_states, a0)
+-            tmin_a1 = torch.min(tq1_a1, tq2_a1)
+-            tmin_a0 = torch.min(tq1_a0, tq2_a0)
+-
+-            v_next = next_probs * (tmin_a1 - alpha * next_log_p) + (1 - next_probs) * (tmin_a0 - alpha * next_log_1mp)
+-            target_q = shaped_rewards + self.gamma * v_next * (1 - dones)
+-        
+-        current_q1 = self.critic1(states, actions)
+-        current_q2 = self.critic2(states, actions)
+-        
+-        critic1_loss = F.mse_loss(current_q1, target_q)
+-        critic2_loss = F.mse_loss(current_q2, target_q)
+-        
+-        self.critic1_optimizer.zero_grad()
+-        critic1_loss.backward()
+-        self.critic1_optimizer.step()
+-        
+-        self.critic2_optimizer.zero_grad()
+-        critic2_loss.backward()
+-        self.critic2_optimizer.step()
+-        
+-        # Actor update: expectation over discrete actions with entropy
+-        logits = self.actor(states)
+-        probs = torch.sigmoid(logits).clamp(1e-6, 1 - 1e-6)
+-        log_p = torch.log(probs)
+-        log_1mp = torch.log(1 - probs)
+-
+-        a1 = torch.ones_like(probs)
+-        a0 = torch.zeros_like(probs)
+-        q1_a1 = self.critic1(states, a1)
+-        q2_a1 = self.critic2(states, a1)
+-        q1_a0 = self.critic1(states, a0)
+-        q2_a0 = self.critic2(states, a0)
+-        min_q_a1 = torch.min(q1_a1, q2_a1)
+-        min_q_a0 = torch.min(q1_a0, q2_a0)
+-
+-        actor_loss = (probs * (alpha * log_p - min_q_a1) + (1 - probs) * (alpha * log_1mp - min_q_a0)).mean()
+-
+-        self.actor_optimizer.zero_grad()
+-        actor_loss.backward()
+-        self.actor_optimizer.step()
+-
+-        # Temperature tuning
+-        with torch.no_grad():
+-            entropy = -(probs * log_p + (1 - probs) * log_1mp)
+-        alpha_loss = -(self.log_alpha * (entropy.detach() - self.target_entropy)).mean()
+-        self.alpha_optimizer.zero_grad()
+-        alpha_loss.backward()
+-        self.alpha_optimizer.step()
+-        
+-        # Soft update target networks
+-        for param, target_param in zip(self.critic1.parameters(), self.target_critic1.parameters()):
+-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+-        
+-        for param, target_param in zip(self.critic2.parameters(), self.target_critic2.parameters()):
+-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+-        
+-        # Log training info (include failure_penalty for plotting resilience)
+-        self.training_losses.append({
+-            'actor_loss': actor_loss.item(),
+-            'alpha': alpha.item(),
+-            'critic1_loss': critic1_loss.item(),
+-            'critic2_loss': critic2_loss.item(),
+-            'failure_penalty': penalty_mean
+-        })
+-
+-def train_failure_aware_sac(use_failure_buffer=True):
+-    env = gym.make('LunarLander-v3')
+-    state_dim = env.observation_space.shape[0]
+-    action_dim = 1  # Continuous representation of discrete action
+-    
+-    agent = FailureAwareSAC(state_dim, action_dim, use_failure_buffer=use_failure_buffer)
+-    
+-    episodes = 1000
+-    max_steps = 500
+-    episode_rewards = []
+-    failure_counts = []
+-    
+-    print("🚀 Training Failure-Aware SAC on CartPole!")
+-    mode = "ENABLED" if use_failure_buffer else "DISABLED"
+-    print(f"💡 Failure buffer is {mode} (reward shaping + mixed sampling)")
+-    
+-    for episode in range(episodes):
+-        state, _ = env.reset()
+-        total_reward = 0
+-        failures_this_episode = 0
+-        
+-        for step in range(max_steps):
+-            action, _ = agent.select_action(state)
+-            next_state, reward, terminated, truncated, _ = env.step(action)
+-            done = terminated or truncated
+-            
+-            # Modified reward for CartPole failure detection
+-            if done and step < max_steps - 1:  # Early termination = failure
+-                reward = -1  # Failure penalty
+-                failures_this_episode += 1
+-            
+-            agent.store_experience(state, action, reward, next_state, done)
+-            
+-            if len(agent.experience_buffer) > 64:
+-                agent.update()
+-            
+-            state = next_state
+-            total_reward += reward
+-            
+-            if done:
+-                break
+-        
+-        episode_rewards.append(total_reward)
+-        failure_counts.append(failures_this_episode)
+-        
+-        if episode % 50 == 0:
+-            avg_reward = np.mean(episode_rewards[-50:])
+-            failure_buffer_size = len(agent.failure_buffer)
+-            recent_penalty = agent.failure_penalties[-1] if agent.failure_penalties else 0
+-            print(f"Episode {episode}: Avg Reward: {avg_reward:.2f}, "
+-                  f"Failure Buffer: {failure_buffer_size}, "
+-                  f"Recent Failure Penalty: {recent_penalty:.4f}")
+-    
+-    return agent, episode_rewards, failure_counts
+-
+-def plot_results(agent, episode_rewards, failure_counts):
+-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+-    
+-    # Episode rewards
+-    axes[0,0].plot(episode_rewards)
+-    axes[0,0].set_title('Episode Rewards Over Time')
+-    axes[0,0].set_xlabel('Episode')
+-    axes[0,0].set_ylabel('Total Reward')
+-    axes[0,0].grid(True)
+-    
+-    # Failure penalties over time
+-    if agent.failure_penalties:
+-        axes[0,1].plot(agent.failure_penalties)
+-        axes[0,1].set_title('Failure Penalty Over Training Steps')
+-        axes[0,1].set_xlabel('Training Step')
+-        axes[0,1].set_ylabel('Failure Penalty')
+-        axes[0,1].grid(True)
+-    
+-    # Failure buffer growth
+-    axes[1,0].plot([len(agent.failure_buffer) for _ in range(len(episode_rewards))])
+-    axes[1,0].set_title('Failure Buffer Size')
+-    axes[1,0].set_xlabel('Episode')
+-    axes[1,0].set_ylabel('Number of Stored Failures')
+-    axes[1,0].grid(True)
+-    
+-    # Training losses
+-    if agent.training_losses:
+-        last_losses = agent.training_losses[-500:]
+-        actor_losses = [loss['actor_loss'] for loss in last_losses]
+-        # Prefer logged failure_penalty if available, else fall back to tracked penalties
+-        fp_logged = [loss.get('failure_penalty', None) for loss in last_losses]
+-        if any(v is not None for v in fp_logged):
+-            failure_penalties = [0.0 if v is None else v for v in fp_logged]
+-        else:
+-            # align length with actor_losses
+-            failure_penalties = agent.failure_penalties[-len(actor_losses):] if agent.failure_penalties else []
+-        
+-        axes[1,1].plot(actor_losses, label='Actor Loss', alpha=0.7)
+-        if failure_penalties:
+-            axes[1,1].plot(failure_penalties, label='Failure Penalty', alpha=0.7)
+-        axes[1,1].set_title('Training Losses (Last 500 steps)')
+-        axes[1,1].set_xlabel('Training Step')
+-        axes[1,1].set_ylabel('Loss')
+-        axes[1,1].legend()
+-        axes[1,1].grid(True)
+-    
+-    plt.tight_layout()
+-    plt.show()
+-    
+-    print(f"\n📊 Training Complete!")
+-    print(f"Final failure buffer size: {len(agent.failure_buffer)}")
+-    print(f"Average reward last 100 episodes: {np.mean(episode_rewards[-100:]):.2f}")
+-    print(f"Your dual-buffer approach stored {len(agent.failure_buffer)} failure experiences!")
+-
+-if __name__ == "__main__":
+-    import argparse
+-    parser = argparse.ArgumentParser()
+-    parser.add_argument("--use-failure-buffer", action=argparse.BooleanOptionalAction, default=True,
+-                        help="Enable failure buffer reward shaping and mixed sampling")
+-    parser.add_argument("--render-test", action=argparse.BooleanOptionalAction, default=False,
+-                        help="Render a short test run after training")
+-    args = parser.parse_args()
+-
+-    # Run the experiment!
+-    agent, rewards, failures = train_failure_aware_sac(use_failure_buffer=args.use_failure_buffer)
+-    plot_results(agent, rewards, failures)
+-    
+-    if args.render_test:
+-        # Test the trained agent
+-        print("\n🎮 Testing trained agent...")
+-        env = gym.make('LunarLander-v3', render_mode='human')
+-        state, _ = env.reset()
+-        
+-        for _ in range(1000):
+-            action, _ = agent.select_action(state)
+-            state, _, terminated, truncated, _ = env.step(action)
+-            if terminated or truncated:
+-                break
+-        
+-        env.close()
+\ No newline at end of file
