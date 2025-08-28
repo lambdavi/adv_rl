@@ -357,9 +357,14 @@ if __name__ == "__main__":
 
         # Store transition
         real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
+        if "final_observation" in infos:
+            for idx, trunc in enumerate(truncations):
+                if trunc:
+                    real_next_obs[idx] = infos["final_observation"][idx]
+        else:
+            for idx, trunc in enumerate(truncations):
+                if trunc:
+                    real_next_obs[idx] = next_obs[idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
         obs = next_obs
 
