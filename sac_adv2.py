@@ -597,7 +597,7 @@ if __name__ == "__main__":
                     # Failure buffer actor penalty
                     if len(failure_buffer.clusters) > 0:
                         with torch.no_grad():
-                            danger_penalty = failure_buffer.compute_penalty(obs.cpu().numpy())
+                            danger_penalty = failure_buffer.compute_penalty(obs)
                         danger_penalty = torch.FloatTensor(danger_penalty).to(device)
 
                         # add penalty term
