@@ -152,8 +152,31 @@ class FailureClusterBuffer:
         return sampled_states
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, action_space_type, hidden_dim=256):
+    def __init__(self, state_dim, action_dim, hidden_dim=256):
         super(Actor, self).__init__()
+        self.action_dim = action_dim
+        self.fc1 = nn.Linear(state_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, action_dim)
+        
+    def forward(self, state):
+        x = F.relu(self.fc1(state))
+        x = F.relu(self.fc2(x))
+        logits = self.fc3(x)
+        return logits
+    
+    def sample_action(self, state):
+        logits = self.forward(state)
+        probs = F.softmax(logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
+        action = dist.sample()
+        log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
+        return action, log_prob, entropy
+
+class Critic(nn.Module):
+    def __init__(self, state_dim, action_dim, action_space_type, hidden_dim=256):
+        super(Critic, self).__init__()
         self.action_space_type = action_space_type
         self.action_dim = action_dim
         
@@ -161,74 +184,28 @@ class Actor(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         
         if action_space_type == 'discrete':
-            # For discrete actions, output logits for each action
+            # For discrete actions, output Q-value for each action
             self.fc3 = nn.Linear(hidden_dim, action_dim)
         else:
-            # For continuous actions, output mean and log_std for each action dimension
-            self.fc3_mean = nn.Linear(hidden_dim, action_dim)
-            self.fc3_logstd = nn.Linear(hidden_dim, action_dim)
+            # For continuous actions, take state and action as input
+            self.fc3 = nn.Linear(hidden_dim + action_dim, 1)
         
-    def forward(self, state):
+    def forward(self, state, action=None):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
         
         if self.action_space_type == 'discrete':
-            # Output logits for discrete actions
-            logits = self.fc3(x)
-            return logits
-        else:
-            # Output mean and log_std for continuous actions
-            mean = self.fc3_mean(x)
-            log_std = self.fc3_logstd(x)
-            log_std = torch.clamp(log_std, -20, 2)  # Clamp for numerical stability
-            return mean, log_std
-    
-    def sample_action(self, state):
-        if self.action_space_type == 'discrete':
-            logits = self.forward(state)
-            probs = F.softmax(logits, dim=-1)
-            dist = torch.distributions.Categorical(probs)
-            action = dist.sample()
-            log_prob = dist.log_prob(action)
-            return action, log_prob, probs
-        else:
-            mean, log_std = self.forward(state)
-            std = log_std.exp()
-            dist = torch.distributions.Normal(mean, std)
-            action = dist.rsample()  # Use rsample for reparameterization
-            log_prob = dist.log_prob(action).sum(dim=-1)
-            return action, log_prob, (mean, std)
-
-class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, action_space_type, hidden_dim=256):
-        super(Critic, self).__init__()
-        self.action_space_type = action_space_type
-        
-        if action_space_type == 'discrete':
-            # For discrete actions, input is just state
-            self.fc1 = nn.Linear(state_dim, hidden_dim)
-            self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-            self.fc3 = nn.Linear(hidden_dim, action_dim)  # Q-value for each action
-        else:
-            # For continuous actions, input is state + action
-            self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
-            self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-            self.fc3 = nn.Linear(hidden_dim, 1)
-    
-    def forward(self, state, action=None):
-        if self.action_space_type == 'discrete':
-            # For discrete actions, return Q-values for all actions
-            x = F.relu(self.fc1(state))
-            x = F.relu(self.fc2(x))
+            # Output Q-values for each action
             q_values = self.fc3(x)
+            if action is not None:
+                # If action is provided, return Q-value for that action
+                return q_values.gather(1, action.long())
             return q_values
         else:
             # For continuous actions, concatenate state and action
-            x = torch.cat([state, action], dim=-1)
-            x = F.relu(self.fc1(x))
-            x = F.relu(self.fc2(x))
-            q_value = self.fc3(x)
-            return q_value
+            if action is not None:
+                x = torch.cat([x, action], dim=-1)
+            return self.fc3(x)
 
 class FailureAwareSAC:
     def __init__(self, state_dim, action_dim, action_space_type, lr=3e-4, gamma=0.99, tau=0.005, use_failure_buffer=True):
@@ -240,7 +217,7 @@ class FailureAwareSAC:
         self.action_dim = action_dim
         
         # Networks
-        self.actor = Actor(state_dim, action_dim, action_space_type).to(self.device)
+        self.actor = Actor(state_dim, action_dim).to(self.device)
         self.critic1 = Critic(state_dim, action_dim, action_space_type).to(self.device)
         self.critic2 = Critic(state_dim, action_dim, action_space_type).to(self.device)
         self.target_critic1 = Critic(state_dim, action_dim, action_space_type).to(self.device)
@@ -307,10 +284,21 @@ class FailureAwareSAC:
         if not self.use_failure_buffer or not self.failure_cluster_buffer.clusters:
             return torch.zeros(states.shape[0], device=self.device)
         
-        penalties = []
-        for state in states:
-            penalty = self.failure_cluster_buffer.compute_penalty(state.cpu().numpy())
-            penalties.append(penalty)
+        # Vectorized computation for better performance
+        states_np = states.cpu().numpy()
+        penalties = np.zeros(len(states_np))
+        
+        # Compute distances to all clusters at once
+        for centroid, states_list, weight in self.failure_cluster_buffer.clusters:
+            # Vectorized distance computation
+            distances = np.linalg.norm(states_np - centroid, axis=1)
+            # Weight by cluster size (bigger clusters = more dangerous)
+            weighted_distances = distances / (weight ** 0.5)
+            # Update penalties with minimum distance
+            penalties = np.minimum(penalties, weighted_distances)
+        
+        # Exponential penalty based on distance
+        penalties = np.exp(-penalties)
         
         return torch.FloatTensor(penalties).to(self.device) * self.failure_penalty_weight
     
@@ -370,24 +358,25 @@ class FailureAwareSAC:
             penalty_mean = penalties.mean().item() if penalties.numel() > 0 else 0.0
         
         # Update critics
+        # Compute target Q
         with torch.no_grad():
             if self.action_space_type == 'discrete':
                 # For discrete actions, compute target Q using next state action probabilities
-                next_action, next_log_prob, next_probs = self.actor.sample_action(next_states)
+                next_action, next_log_prob, next_entropy = self.actor.sample_action(next_states)
                 next_q1 = self.target_critic1(next_states)
                 next_q2 = self.target_critic2(next_states)
                 
-                # Expected Q-value over next action distribution
-                next_q1_exp = (next_probs * next_q1).sum(dim=-1)
-                next_q2_exp = (next_probs * next_q2).sum(dim=-1)
-                next_q = torch.min(next_q1_exp, next_q2_exp)
+                # Get Q-values for the sampled next actions
+                next_q1_action = next_q1.gather(1, next_action.unsqueeze(1))
+                next_q2_action = next_q2.gather(1, next_action.unsqueeze(1))
+                next_q = torch.min(next_q1_action, next_q2_action).squeeze(1)
                 
                 # Add entropy term
                 alpha = self.log_alpha.exp()
-                next_q = next_q - alpha * (-(next_probs * torch.log(next_probs + 1e-8)).sum(dim=-1))
+                next_q = next_q - alpha * next_log_prob
             else:
                 # For continuous actions
-                next_action, next_log_prob, _ = self.actor.sample_action(next_states)
+                next_action, next_log_prob, next_entropy = self.actor.sample_action(next_states)
                 next_q1 = self.target_critic1(next_states, next_action)
                 next_q2 = self.target_critic2(next_states, next_action)
                 next_q = torch.min(next_q1, next_q2)
@@ -395,7 +384,7 @@ class FailureAwareSAC:
                 # Add entropy term
                 alpha = self.log_alpha.exp()
                 next_q = next_q - alpha * next_log_prob
-            
+        
             target_q = shaped_rewards + self.gamma * (1 - dones) * next_q
         
         # Current Q-values
@@ -422,23 +411,24 @@ class FailureAwareSAC:
         self.critic2_optimizer.step()
         
         # Update actor
+        # Actor loss
         if self.action_space_type == 'discrete':
-            # For discrete actions
-            action, log_prob, probs = self.actor.sample_action(states)
+            # For discrete actions, compute proper categorical distribution loss
+            action, log_prob, entropy = self.actor.sample_action(states)
             q1 = self.critic1(states)
             q2 = self.critic2(states)
-            q = torch.min(q1, q2)
             
-            # Expected Q-value over action distribution
-            q_exp = (probs * q).sum(dim=-1)
+            # Get Q-values for the sampled actions
+            q1_action = q1.gather(1, action.unsqueeze(1))
+            q2_action = q2.gather(1, action.unsqueeze(1))
+            q_action = torch.min(q1_action, q2_action).squeeze(1)
             
             # Actor loss with entropy
             alpha = self.log_alpha.exp()
-            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1)
-            actor_loss = (alpha * log_prob - q_exp).mean()
+            actor_loss = (alpha * log_prob - q_action).mean()
         else:
             # For continuous actions
-            action, log_prob, _ = self.actor.sample_action(states)
+            action, log_prob, entropy = self.actor.sample_action(states)
             q1 = self.critic1(states, action)
             q2 = self.critic2(states, action)
             q = torch.min(q1, q2)
@@ -453,11 +443,12 @@ class FailureAwareSAC:
         
         # Update temperature
         if self.action_space_type == 'discrete':
-            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1)
+            # For discrete actions, entropy is already computed in sample_action
+            alpha_loss = -(self.log_alpha * (entropy + self.target_entropy).detach()).mean()
         else:
-            entropy = -log_prob
+            # For continuous actions, entropy is already computed in sample_action
+            alpha_loss = -(self.log_alpha * (entropy + self.target_entropy).detach()).mean()
         
-        alpha_loss = -(self.log_alpha * (entropy + self.target_entropy).detach()).mean()
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.alpha_optimizer.step()
@@ -468,14 +459,15 @@ class FailureAwareSAC:
         for target_param, param in zip(self.target_critic2.parameters(), self.critic2.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
         
-        # Log training info
-        self.training_losses.append({
-            'actor_loss': actor_loss.item(),
-            'alpha': alpha.item(),
-            'critic1_loss': critic1_loss.item(),
-            'critic2_loss': critic2_loss.item(),
-            'failure_penalty': penalty_mean
-        })
+        # Log training info (reduced frequency for performance)
+        if len(self.training_losses) % 10 == 0:  # Log every 10 updates instead of every update
+            self.training_losses.append({
+                'actor_loss': actor_loss.item(),
+                'alpha': alpha.item(),
+                'critic1_loss': critic1_loss.item(),
+                'critic2_loss': critic2_loss.item(),
+                'failure_penalty': penalty_mean
+            })
         
         self.failure_penalties.append(penalty_mean)
 
@@ -504,6 +496,10 @@ def train_failure_aware_sac(use_failure_buffer=True, episodes=1000, max_steps=50
     print("🚀 Training Failure-Aware SAC on LunarLander!")
     mode = "ENABLED" if use_failure_buffer else "DISABLED"
     print(f"💡 Failure buffer is {mode} (danger zone clustering + mixed sampling)")
+    
+    # Performance optimization: batch updates
+    update_frequency = 4  # Update every 4 steps instead of every step
+    update_counter = 0
     
     for episode in range(episodes):
         state, _ = env.reset()
@@ -534,8 +530,10 @@ def train_failure_aware_sac(use_failure_buffer=True, episodes=1000, max_steps=50
             episode_reward += reward
             state = next_state
             
-            # Update agent
-            agent.update()
+            # Update agent (batched for performance)
+            update_counter += 1
+            if update_counter % update_frequency == 0:
+                agent.update()
             
             if done:
                 break
