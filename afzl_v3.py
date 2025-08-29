@@ -493,14 +493,14 @@ if __name__ == "__main__":
                     with torch.no_grad():
                         action, _, _ = actor.get_action(obs_t)
                 
+                action_np = action.squeeze(0).detach().cpu().numpy()
+                obs, reward, done, truncated, _ = eval_env.step(action_np)
+                
                 # Check for failure in evaluation
                 if args.afzl_enabled and failure_buffer is not None and not episode_had_failure:
                     if failure_buffer.is_failure_state(obs_t.squeeze(0), {}, reward, done or truncated):
                         failures_in_eval += 1
                         episode_had_failure = True
-                
-                action_np = action.squeeze(0).detach().cpu().numpy()
-                obs, reward, done, truncated, _ = eval_env.step(action_np)
                 ep_return += float(reward)
                 ep_len += 1
                 
