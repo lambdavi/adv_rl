@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
+import panda_gym
 
 from utils.buffer import ReplayBuffer
 
