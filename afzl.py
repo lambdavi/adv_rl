@@ -73,9 +73,9 @@ class Args:
     """enable Adversarial Failure Zone Learning"""
     failure_buffer_size: int = 10000
     """maximum number of failure states to store"""
-    failure_penalty_weight: float = 50.0
+    failure_penalty_weight: float = 10.0
     """weight for failure zone penalty in Q-learning"""
-    failure_radius: float = 0.5
+    failure_radius: float = 0.3
     """radius for failure zone influence in state space"""
     failure_decay: float = 0.995
     """decay factor for failure zone influence over time"""
@@ -156,45 +156,22 @@ class FailureZoneBuffer:
     
     def is_failure_state(self, state, info, reward=None, done=None):
         """
-        Detect if current state represents a catastrophic failure
-        Enhanced detection with multiple failure modes and predictive elements
+        Detect TRUE catastrophic failures, not normal Hopper wobbling
+        Much more conservative detection to avoid false positives
         """
-        # For Hopper: more aggressive failure detection
         torso_height = state[0].item()
-        torso_angle = state[1].item() if len(state) > 1 else 0.0
         
-        # Position states (assuming standard Hopper state layout)
-        if len(state) >= 6:
-            thigh_joint = state[2].item()
-            leg_joint = state[3].item() 
-            foot_joint = state[4].item()
-            
-            # Velocity states
-            torso_vel_y = state[6].item() if len(state) > 6 else 0.0
-            
-            # Multiple failure conditions:
-            fallen = torso_height < 0.8  # More aggressive threshold
-            extreme_angle = abs(torso_angle) > 0.5  # Tilted too much
-            extreme_joints = (abs(thigh_joint) > 2.5 or 
-                            abs(leg_joint) > 2.5 or 
-                            abs(foot_joint) > 2.5)
-            falling_fast = torso_vel_y < -2.0  # Falling rapidly
-            
-            # Predictive failure: heading towards danger
-            predicted_height = torso_height + 0.1 * torso_vel_y  # Simple linear prediction
-            will_fall = predicted_height < 0.7
-            
-            failure = fallen or extreme_angle or extreme_joints or falling_fast or will_fall
-        else:
-            # Fallback for simpler state spaces
-            failure = torso_height < 0.8
+        # Only flag as failure if MULTIPLE severe conditions are met
+        definitely_fallen = torso_height < 0.6  # Much more conservative
         
-        # Also detect episode termination as failure (except for max steps)
+        # Check if episode ended with very low reward (true failure)
+        reward_based_failure = False
         if done is not None and done and reward is not None:
-            # In Hopper, low rewards often indicate failure states
-            failure = failure or (reward < -1.0)
+            # Only flag as failure if reward is extremely negative AND episode ended early
+            reward_based_failure = reward < -5.0  # Very conservative threshold
         
-        return failure
+        # Only flag as failure if we have strong evidence
+        return definitely_fallen or reward_based_failure
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -386,15 +363,12 @@ if __name__ == "__main__":
                     next_state, infos, rewards[i], terminations[i] or truncations[i]
                 )
                 
+                # Only store failures, not "led to failure" states initially
                 if is_current_failure:
-                    # Weight severity by how bad the reward is
-                    severity = max(1.0, abs(min(0, rewards[i])) / 10.0)
+                    # Weight severity by how catastrophic the failure is
+                    severity = max(1.0, abs(min(0, rewards[i])) / 5.0)
                     failure_buffer.add_failure(current_state, severity)
                     failure_count += 1
-                    
-                if is_next_failure and not is_current_failure:
-                    # Also store the state that led to failure
-                    failure_buffer.add_failure(current_state, 0.5)  # Lower severity for "led to failure"
 
         # Record episode statistics
         if "episode" in infos:
