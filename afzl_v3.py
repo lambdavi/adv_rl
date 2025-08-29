@@ -17,6 +17,7 @@ import tyro
 from torch.utils.tensorboard import SummaryWriter
 
 from utils.buffer import ReplayBuffer
+import panda_gym
 
 
 @dataclass
