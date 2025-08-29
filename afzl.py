@@ -73,12 +73,14 @@ class Args:
     """enable Adversarial Failure Zone Learning"""
     failure_buffer_size: int = 10000
     """maximum number of failure states to store"""
-    failure_penalty_weight: float = 1.0
+    failure_penalty_weight: float = 50.0
     """weight for failure zone penalty in Q-learning"""
-    failure_radius: float = 0.1
+    failure_radius: float = 0.5
     """radius for failure zone influence in state space"""
-    failure_decay: float = 0.99
+    failure_decay: float = 0.995
     """decay factor for failure zone influence over time"""
+    predictive_horizon: int = 3
+    """steps ahead to check for potential failures"""
 
     # Evaluation arguments
     eval_on_finish: bool = False
@@ -102,14 +104,16 @@ class FailureZoneBuffer:
         # Circular buffer for failure states
         self.states = torch.zeros((capacity, state_dim), device=device)
         self.timestamps = torch.zeros(capacity, device=device)
+        self.severity = torch.zeros(capacity, device=device)  # Failure severity weighting
         self.ptr = 0
         self.size = 0
         self.global_time = 0
     
-    def add_failure(self, state):
-        """Add a catastrophic failure state to the buffer"""
+    def add_failure(self, state, severity=1.0):
+        """Add a catastrophic failure state to the buffer with severity weighting"""
         self.states[self.ptr] = state.clone()
         self.timestamps[self.ptr] = self.global_time
+        self.severity[self.ptr] = severity
         
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
@@ -118,7 +122,7 @@ class FailureZoneBuffer:
     def get_failure_penalty(self, states):
         """
         Compute penalty for states based on proximity to failure zones
-        Returns: penalty tensor of shape (batch_size,)
+        Enhanced with severity weighting and normalized penalties
         """
         if self.size == 0:
             return torch.zeros(states.shape[0], device=self.device)
@@ -129,6 +133,7 @@ class FailureZoneBuffer:
         # Get active failure states (not empty slots)
         active_failures = self.states[:self.size]
         active_timestamps = self.timestamps[:self.size]
+        active_severity = self.severity[:self.size]
         
         # Compute time-based decay weights
         time_weights = self.decay ** (self.global_time - active_timestamps)
@@ -137,30 +142,59 @@ class FailureZoneBuffer:
             # Compute distances to all failure states
             distances = torch.norm(states[i:i+1] - active_failures, dim=1)
             
-            # Exponential decay based on distance
-            distance_weights = torch.exp(-distances / self.radius)
+            # Gaussian-like penalty instead of exponential (smoother gradients)
+            distance_weights = torch.exp(-0.5 * (distances / self.radius) ** 2)
             
-            # Combined penalty: distance proximity * time decay
-            penalties[i] = torch.sum(distance_weights * time_weights)
+            # Combined penalty: distance proximity * time decay * failure severity
+            penalties[i] = torch.sum(distance_weights * time_weights * active_severity)
+        
+        # Normalize penalties to reasonable range (0-10)
+        if penalties.max() > 0:
+            penalties = 10.0 * penalties / (penalties.max() + 1e-8)
         
         return penalties
     
-    def is_failure_state(self, state, info):
+    def is_failure_state(self, state, info, reward=None, done=None):
         """
         Detect if current state represents a catastrophic failure
-        Hopper-specific: fallen over, extreme positions, or stuck
+        Enhanced detection with multiple failure modes and predictive elements
         """
-        # For Hopper, check if the agent has fallen (torso height too low)
-        # state[0] is typically the torso height in Hopper
+        # For Hopper: more aggressive failure detection
         torso_height = state[0].item()
+        torso_angle = state[1].item() if len(state) > 1 else 0.0
         
-        # Also check for extreme joint angles or velocities
-        extreme_position = torch.any(torch.abs(state[1:6]) > 3.0)  # position limits
-        extreme_velocity = torch.any(torch.abs(state[6:]) > 10.0)  # velocity limits
+        # Position states (assuming standard Hopper state layout)
+        if len(state) >= 6:
+            thigh_joint = state[2].item()
+            leg_joint = state[3].item() 
+            foot_joint = state[4].item()
+            
+            # Velocity states
+            torso_vel_y = state[6].item() if len(state) > 6 else 0.0
+            
+            # Multiple failure conditions:
+            fallen = torso_height < 0.8  # More aggressive threshold
+            extreme_angle = abs(torso_angle) > 0.5  # Tilted too much
+            extreme_joints = (abs(thigh_joint) > 2.5 or 
+                            abs(leg_joint) > 2.5 or 
+                            abs(foot_joint) > 2.5)
+            falling_fast = torso_vel_y < -2.0  # Falling rapidly
+            
+            # Predictive failure: heading towards danger
+            predicted_height = torso_height + 0.1 * torso_vel_y  # Simple linear prediction
+            will_fall = predicted_height < 0.7
+            
+            failure = fallen or extreme_angle or extreme_joints or falling_fast or will_fall
+        else:
+            # Fallback for simpler state spaces
+            failure = torso_height < 0.8
         
-        fallen = torso_height < 0.7  # Hopper falls if torso too low
+        # Also detect episode termination as failure (except for max steps)
+        if done is not None and done and reward is not None:
+            # In Hopper, low rewards often indicate failure states
+            failure = failure or (reward < -1.0)
         
-        return fallen or extreme_position or extreme_velocity
+        return failure
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -336,35 +370,45 @@ if __name__ == "__main__":
         # Environment step
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        # AFZL: Detect and store failure states
+        # AFZL: Detect and store failure states with enhanced detection
         if args.afzl_enabled and failure_buffer is not None:
             for i in range(envs.num_envs):
                 current_state = torch.tensor(obs[i], device=device, dtype=torch.float32)
-                if failure_buffer.is_failure_state(current_state, infos):
-                    failure_buffer.add_failure(current_state)
+                next_state = torch.tensor(next_obs[i], device=device, dtype=torch.float32)
+                
+                # Check current state for failure
+                is_current_failure = failure_buffer.is_failure_state(
+                    current_state, infos, rewards[i], terminations[i] or truncations[i]
+                )
+                
+                # Check next state for failure (more important for learning)
+                is_next_failure = failure_buffer.is_failure_state(
+                    next_state, infos, rewards[i], terminations[i] or truncations[i]
+                )
+                
+                if is_current_failure:
+                    # Weight severity by how bad the reward is
+                    severity = max(1.0, abs(min(0, rewards[i])) / 10.0)
+                    failure_buffer.add_failure(current_state, severity)
                     failure_count += 1
+                    
+                if is_next_failure and not is_current_failure:
+                    # Also store the state that led to failure
+                    failure_buffer.add_failure(current_state, 0.5)  # Lower severity for "led to failure"
 
         # Record episode statistics
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                if info is not None:
-                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                    if args.afzl_enabled:
-                        writer.add_scalar("afzl/failure_count", failure_count, global_step)
-                    break
+        if "episode" in infos:
+            print(f"global_step={global_step}, episodic_return={infos['episode']['r']}, episodic_length={infos['episode']['l']}, failure_count={failure_count}")
+            writer.add_scalar("charts/episodic_return", infos["episode"]["r"], global_step)
+            writer.add_scalar("charts/episodic_length", infos["episode"]["l"], global_step)
+            if args.afzl_enabled:
+                writer.add_scalar("afzl/failure_count", failure_count, global_step)
 
         # Store transition
         real_next_obs = next_obs.copy()
-        if "final_observation" in infos:
-            for idx, trunc in enumerate(truncations):
-                if trunc:
-                    real_next_obs[idx] = infos["final_observation"][idx]
-        else:
-            for idx, trunc in enumerate(truncations):
-                if trunc:
-                    real_next_obs[idx] = next_obs[idx]
+        for idx, trunc in enumerate(truncations):
+            if trunc:
+                real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
         obs = next_obs
 
@@ -476,7 +520,7 @@ if __name__ == "__main__":
                 
                 # Check for failure in evaluation
                 if args.afzl_enabled and failure_buffer is not None and not episode_had_failure:
-                    if failure_buffer.is_failure_state(obs_t.squeeze(0), {}):
+                    if failure_buffer.is_failure_state(obs_t.squeeze(0), {}, reward, done or truncated):
                         failures_in_eval += 1
                         episode_had_failure = True
                 
