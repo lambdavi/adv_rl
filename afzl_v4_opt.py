@@ -125,15 +125,21 @@ class AdaptiveLambda:
     
     def update(self, current_failure_rate):
         """Update lambda to drive failure rate towards target"""
-        # Convert to tensor for gradient computation
-        current_rate_tensor = torch.tensor(current_failure_rate, dtype=torch.float32, device=self.device, requires_grad=False)
-        target_rate_tensor = torch.tensor(self.target_rate, dtype=torch.float32, device=self.device, requires_grad=False)
+        # Simple proportional control: increase lambda if failure rate is too high
+        # This is more stable than gradient-based updates for this use case
+        if current_failure_rate > self.target_rate * 1.1:  # 10% tolerance
+            # Failure rate too high, increase lambda
+            self.lambda_param.data += 0.1
+        elif current_failure_rate < self.target_rate * 0.9:
+            # Failure rate too low, decrease lambda
+            self.lambda_param.data -= 0.05
+        else:
+            # Within target range, small adjustment
+            if current_failure_rate > self.target_rate:
+                self.lambda_param.data += 0.01
+            else:
+                self.lambda_param.data -= 0.01
         
-        # Loss: (current_rate - target_rate)^2
-        loss = (current_rate_tensor - target_rate_tensor) ** 2
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
         return self.get_lambda().item()
 
 
