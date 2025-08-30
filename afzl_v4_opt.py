@@ -358,8 +358,7 @@ if __name__ == "__main__":
                 real_next_obs[idx] = infos["final_observation"][idx]
         
         # Store additional info for failure prediction training
-        extra_info = {"failure_labels": failure_labels} if args.afzl_enabled else {}
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos, extra_info)
+        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
         obs = next_obs
 
         # Training
