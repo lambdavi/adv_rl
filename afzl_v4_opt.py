@@ -318,7 +318,11 @@ if __name__ == "__main__":
     failure_count = 0
     recent_failure_rate = 0.0
     failure_rate_window = 1000  # Window for computing recent failure rate
-    
+
+    # Store recent transitions for failure prediction training
+    recent_transitions = []
+    max_recent_transitions = 10000  # Keep last 10k transitions for failure training
+
     for global_step in range(args.total_timesteps):
         # Action selection
         if global_step < args.learning_starts:
@@ -351,14 +355,26 @@ if __name__ == "__main__":
             if args.afzl_enabled:
                 writer.add_scalar("afzl/failure_count", failure_count, global_step)
 
-        # Store transition with failure labels
+        # Store transition in replay buffer
         real_next_obs = next_obs.copy()
         for idx, trunc in enumerate(truncations):
             if trunc and "final_observation" in infos:
                 real_next_obs[idx] = infos["final_observation"][idx]
         
-        # Store additional info for failure prediction training
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+        
+        # Store recent transitions for failure prediction training
+        if args.afzl_enabled and failure_net is not None:
+            for i in range(envs.num_envs):
+                recent_transitions.append({
+                    'obs': obs[i].copy(),
+                    'failure_label': failure_labels[i] if i < len(failure_labels) else False
+                })
+            
+            # Keep only recent transitions
+            if len(recent_transitions) > max_recent_transitions:
+                recent_transitions = recent_transitions[-max_recent_transitions:]
+        
         obs = next_obs
 
         # Training
@@ -366,19 +382,28 @@ if __name__ == "__main__":
             data = rb.sample(args.batch_size)
             
             # Train failure predictor if enabled
-            if args.afzl_enabled and failure_net is not None:
-                # Get failure labels from the batch
-                failure_labels = torch.tensor(
-                    [info.get("failure_labels", [False] * args.num_envs)[0] for info in data.infos],
-                    dtype=torch.float32,
+            if args.afzl_enabled and failure_net is not None and len(recent_transitions) > args.batch_size:
+                # Sample from recent transitions for failure prediction training
+                batch_indices = np.random.choice(len(recent_transitions), args.batch_size, replace=False)
+                batch_transitions = [recent_transitions[i] for i in batch_indices]
+                
+                # Extract observations and failure labels
+                batch_obs = torch.tensor(
+                    [t['obs'] for t in batch_transitions], 
+                    dtype=torch.float32, 
+                    device=device
+                )
+                batch_failure_labels = torch.tensor(
+                    [t['failure_label'] for t in batch_transitions], 
+                    dtype=torch.float32, 
                     device=device
                 )
                 
                 # Predict failure probabilities
-                failure_probs = failure_net(data.observations)
+                failure_probs = failure_net(batch_obs)
                 
                 # Binary cross-entropy loss for failure prediction
-                failure_loss = F.binary_cross_entropy(failure_probs, failure_labels)
+                failure_loss = F.binary_cross_entropy(failure_probs, batch_failure_labels)
                 
                 # Optimize failure predictor
                 failure_optimizer.zero_grad()
@@ -464,8 +489,10 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/alpha", alpha, global_step)
                 
                 if args.afzl_enabled and failure_net is not None:
-                    writer.add_scalar("afzl/failure_loss", failure_loss.item(), global_step)
+                    if len(recent_transitions) > args.batch_size:
+                        writer.add_scalar("afzl/failure_loss", failure_loss.item(), global_step)
                     writer.add_scalar("afzl/failure_rate", recent_failure_rate, global_step)
+                    writer.add_scalar("afzl/recent_transitions", len(recent_transitions), global_step)
                     if adaptive_lambda is not None:
                         writer.add_scalar("afzl/lambda_value", adaptive_lambda.get_lambda().item(), global_step)
                     # Log current failure probability
